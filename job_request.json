@@ -1,0 +1,7 @@
+{
+  "seasons": ["2024-25"],
+  "season_types": ["Regular"],
+  "data_types": ["players", "teams"],
+  "output_format": "csv",
+  "output_dir": "./data"
+}
