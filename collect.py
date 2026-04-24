@@ -16,10 +16,20 @@ def fetch_league_game_log(season, season_type, player_or_team):
     """Fetch league game log for a season"""
     print(f"Fetching {player_or_team} game logs for {season} ({season_type})...")
     
+    # Map season_type to the correct API parameter
+    season_type_map = {
+        "Regular": "Regular Season",
+        "Playoffs": "Playoffs",
+        "Pre Season": "Pre Season",
+        "All Star": "All Star"
+    }
+    
+    api_season_type = season_type_map.get(season_type, season_type)
+    
     try:
         log = leaguegamelog.LeagueGameLog(
             season=season,
-            season_type_all_star=season_type,
+            season_type_all_star=api_season_type,
             player_or_team_abbreviation=player_or_team
         )
         df = log.get_data_frames()[0]
