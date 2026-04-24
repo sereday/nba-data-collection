@@ -29,12 +29,15 @@ def fetch_league_game_log(season, season_type, player_or_team):
     """Fetch league game log for a season"""
     print(f"Fetching {player_or_team} game logs for {season} ({season_type})...")
     
-    # Map season_type to the correct API parameter
+    # Map user-friendly season types to API parameter values
     season_type_map = {
         "Regular": "Regular Season",
-        "Playoffs": "Playoffs",
+        "Playoffs": "Playoffs", 
+        "Preseason": "Pre Season",
         "Pre Season": "Pre Season",
-        "All Star": "All Star"
+        "All-Star": "All Star",
+        "All Star": "All Star",
+        "AllStar": "All Star"
     }
     
     api_season_type = season_type_map.get(season_type, season_type)
