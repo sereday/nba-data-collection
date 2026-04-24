@@ -1,5 +1,6 @@
 {
-  "seasons": ["2023-24"],
+  "season_start": "2020-21",
+  "season_end": "2023-24",
   "season_types": ["Regular"],
   "data_types": ["players", "teams"],
   "output_format": "csv",

@@ -12,6 +12,19 @@ def load_job_request(filepath="job_request.json"):
         return json.load(f)
 
 
+def generate_seasons(start_season, end_season):
+    """Generate list of seasons from start to end (inclusive)"""
+    seasons = []
+    start_year = int(start_season.split('-')[0])
+    end_year = int(end_season.split('-')[0])
+
+    for year in range(start_year, end_year + 1):
+        season = f"{year}-{str(year + 1)[-2:]}"
+        seasons.append(season)
+
+    return seasons
+
+
 def fetch_league_game_log(season, season_type, player_or_team):
     """Fetch league game log for a season"""
     print(f"Fetching {player_or_team} game logs for {season} ({season_type})...")
@@ -57,11 +70,21 @@ def save_data(df, output_dir, season, season_type, data_type, format="csv"):
 
 def main():
     job = load_job_request()
-    
+
     output_dir = job.get("output_dir", "./data")
     output_format = job.get("output_format", "csv")
-    
-    for season in job["seasons"]:
+
+    # Generate seasons from range or use provided list
+    if "season_start" in job and "season_end" in job:
+        seasons = generate_seasons(job["season_start"], job["season_end"])
+        print(f"Generated seasons: {seasons}")
+    elif "seasons" in job:
+        seasons = job["seasons"]
+    else:
+        print("Error: Must provide either 'season_start'/'season_end' or 'seasons' in job_request.json")
+        return
+
+    for season in seasons:
         for season_type in job["season_types"]:
             # Players
             if "players" in job["data_types"]:
