@@ -1,9 +1,12 @@
 {
   "season_start": "2025-26",
   "season_end": "2025-26",
-  "season_types": ["Playoffs"],
+  "season_types": ["Regular"],
   "season_types_note": "Available season types: Regular, Playoffs, Preseason, All-Star",
-  "data_types": ["players", "teams"],
+  "data_types": ["players", "teams", "player_bios"],
+  "data_types_note": "Available data types: player_bios, players, teams",
   "output_format": "csv",
-  "output_dir": "./data"
+  "output_dir": "./data",
+  "stages": ["collect", "clean"],
+  "skip_stages": ["collect"]
 }

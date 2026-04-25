@@ -1,0 +1,140 @@
+"""NBA data cleaning module.
+
+This module handles loading collected data, merging datasets, and producing cleaned player-level data.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict
+
+import pandas as pd
+
+from config import get_output_directory, get_output_format
+
+
+def run_clean_stage(job: Dict[str, Any]) -> None:
+    output_dir = get_output_directory(job)
+    output_format = get_output_format(job)
+
+    print("Running clean stage using all available saved data files")
+    print(f"Output format: {output_format}\n")
+
+    # Load all data files from the output directory
+    all_player_dfs = []
+    all_team_dfs = []
+    all_bio_dfs = []
+
+    if not output_dir.exists():
+        print(f"Output directory does not exist: {output_dir}")
+        return
+
+    for filepath in sorted(output_dir.iterdir()):
+        if filepath.suffix not in {".csv", ".parquet"}:
+            continue
+
+        parts = filepath.stem.split("_")
+        if len(parts) < 3:
+            continue
+
+        # Parse filename: {season}_{season_type}_{data_type}
+        # data_type might contain underscores (like "player_bios")
+        # Try to identify data_type by checking known types from the end
+        data_type = None
+        for i in range(len(parts) - 1, 1, -1):  # Start from end, leave at least 2 parts for season+season_type
+            potential_data_type = "_".join(parts[i:])
+            if potential_data_type in {"players", "teams", "player_bios"}:
+                data_type = potential_data_type
+                season_type = parts[i-1]
+                season = "_".join(parts[:i-1])
+                break
+
+        if data_type is None:
+            continue
+
+        if filepath.suffix == ".csv":
+            df = pd.read_csv(filepath)
+        else:
+            df = pd.read_parquet(filepath)
+
+        df["season"] = season
+        df["season_type"] = season_type
+
+        if data_type == "players":
+            all_player_dfs.append(df)
+        elif data_type == "teams":
+            all_team_dfs.append(df)
+        elif data_type == "player_bios":
+            all_bio_dfs.append(df)
+
+    if not all_player_dfs:
+        print("No player data found, skipping clean stage.")
+        return
+
+    # Concatenate all player data across seasons and types
+    player_df = pd.concat(all_player_dfs, ignore_index=True)
+
+    # Concatenate all bio data
+    if all_bio_dfs:
+        bio_df = pd.concat(all_bio_dfs, ignore_index=True)
+        # Outer join player to bio on PLAYER_ID (and TEAM_ID if needed)
+        # Retain all fields except pts through ast_pct from bio
+        stat_cols_to_drop = ['PTS', 'REB', 'AST', 'FG_PCT', 'FG3_PCT', 'FT_PCT', 'OREB', 'DREB', 'STL', 'BLK', 'TOV', 'PF', 'AST_PCT']  # approximate list
+        bio_df = bio_df.drop(columns=[col for col in stat_cols_to_drop if col in bio_df.columns], errors='ignore')
+        player_df = player_df.merge(bio_df, on=['PLAYER_ID', 'TEAM_ID'], how='outer', suffixes=('', '_bio'))
+    else:
+        print("No bio data found, proceeding without bio join.")
+
+    # Concatenate all team data
+    if all_team_dfs:
+        team_df = pd.concat(all_team_dfs, ignore_index=True)
+
+        # Create opp_id map
+        team_grouped = team_df.groupby('GAME_ID')['TEAM_ID'].agg(['min', 'max']).reset_index()
+        opp_map1 = team_grouped.rename(columns={'min': 'TEAM_ID', 'max': 'OPP_ID'})
+        opp_map2 = team_grouped.rename(columns={'max': 'TEAM_ID', 'min': 'OPP_ID'})
+        opp_map = pd.concat([opp_map1, opp_map2], ignore_index=True)
+        opp_gm_map = {f"{row['GAME_ID']}_{row['TEAM_ID']}": row['OPP_ID'] for _, row in opp_map.iterrows()}
+
+        # Add opp_id to team_df
+        team_df['opp_id'] = team_df.apply(lambda row: opp_gm_map.get(f"{row['GAME_ID']}_{row['TEAM_ID']}", None), axis=1)
+
+        # Join player_df with team_df on TEAM_ID and GAME_ID, prefix team stats with tm_
+        tm_cols = [col for col in team_df.columns if col not in ['GAME_ID', 'TEAM_ID', 'season', 'season_type']]
+        tm_rename = {col: f"tm_{col}" for col in tm_cols}
+        team_df_tm = team_df.rename(columns=tm_rename)
+        player_df = player_df.merge(team_df_tm, on=['GAME_ID', 'TEAM_ID'], how='left', suffixes=('', '_tm'))
+
+        # Join again on opp_id, prefix with opp_
+        opp_rename = {col: f"opp_{col}" for col in tm_cols}
+        team_df_opp = team_df.rename(columns=opp_rename)
+        team_df_opp = team_df_opp.rename(columns={'TEAM_ID': 'opp_id'})
+        player_df = player_df.merge(team_df_opp, left_on=['GAME_ID', 'tm_opp_id'], right_on=['GAME_ID', 'opp_id'], how='left', suffixes=('', '_opp'))
+
+    # Drop redundant columns
+    redundant_cols = [
+        'tm_VIDEO_AVAILABLE', 'tm_SEASON_ID', 'tm_TEAM_ABBREVIATION', 'tm_TEAM_NAME',
+        'tm_GAME_DATE', 'tm_MATCHUP', 'tm_WL', 'season_tm', 'season_type_tm', 'tm_opp_id',
+        'opp_VIDEO_AVAILABLE', 'opp_SEASON_ID', 'opp_GAME_DATE', 'opp_MATCHUP', 'opp_WL',
+        'season_opp', 'season_type_opp', 'opp_opp_id'
+    ]
+    player_df = player_df.drop(columns=[col for col in redundant_cols if col in player_df.columns], errors='ignore')
+
+    # Save the cleaned data
+    cleaned_filename = "cleaned_player_data"
+    save_data(player_df, output_dir, cleaned_filename, output_format)
+
+
+def save_data(df: pd.DataFrame, output_dir: Path, filename: str, output_format: str) -> None:
+    """Persist a DataFrame to disk in CSV or Parquet format."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    filepath = output_dir / f"{filename}.{output_format}"
+
+    if output_format == "csv":
+        df.to_csv(filepath, index=False)
+    elif output_format == "parquet":
+        df.to_parquet(filepath, index=False)
+    else:
+        raise ValueError(f"Unsupported output format: {output_format}")
+
+    print(f"  Saved to {filepath}")

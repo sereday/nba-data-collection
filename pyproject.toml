@@ -1,0 +1,14 @@
+[project]
+name = "NBA_Game_Plus_Minus"
+version = "0.1.0"
+description = "NBA data collection pipeline for API-driven data extraction and analysis."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "nba_api>=1.5.0",
+    "pandas>=2.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=65.5.0", "wheel"]
+build-backend = "setuptools.build_meta"
