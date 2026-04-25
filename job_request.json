@@ -1,7 +1,8 @@
 {
-  "season_start": "1946-47",
-  "season_end": "2023-24",
-  "season_types": ["Regular", "Playoffs", "Preseason", "All-Star"],
+  "season_start": "2025-26",
+  "season_end": "2025-26",
+  "season_types": ["Playoffs"],
+  "season_types_note": "Available season types: Regular, Playoffs, Preseason, All-Star",
   "data_types": ["players", "teams"],
   "output_format": "csv",
   "output_dir": "./data"
