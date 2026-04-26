@@ -97,6 +97,10 @@ SEASON_DATA_TYPE_MIN_YEAR: dict[str, int] = {
 # Adaptive rate-limit delay
 # ---------------------------------------------------------------------------
 
+class _AbortError(Exception):
+    """Raised to stop a worker immediately — abort takes priority over all other handling."""
+
+
 class _SharedRateState:
     """Shared across all workers — owns failure counting and backoff timing.
 
@@ -104,57 +108,65 @@ class _SharedRateState:
                   RuntimeError after max_failures consecutive failures.
     Pile-up guard: if a backoff is already in effect when a new failure arrives,
                    cons_failures is not incremented (same rate-limit event).
-    Window guard: cons_failures only resets after a success if the rolling
-                  window shows failures <= successes. Prevents intermittent
-                  rate-limiting from holding the counter permanently at 1.
+    Global abort: if cumulative failures ever exceed cumulative successes,
+                  all workers are stopped immediately via _aborted flag.
     """
 
-    def __init__(self, max_failures: int = 5, window: int = 20):
+    def __init__(self, max_failures: int = 5):
         self._lock = threading.Lock()
         self.cons_failures = 0
         self.max_failures = max_failures
         self._pause_until = 0.0
-        self._window: deque = deque(maxlen=window)
+        self._total_successes = 0
+        self._total_failures = 0
+        self._aborted = False
 
     def sleep(self, seconds: float) -> None:
-        """Success-path sleep, interruptible if a backoff fires mid-sleep."""
+        """Success-path sleep, interruptible if a backoff fires or abort triggers."""
         deadline = time.time() + seconds
         while time.time() < deadline:
+            if self._aborted:
+                raise _AbortError("Aborted: cumulative failures exceed successes")
             if self._pause_until > time.time():
                 self._wait_backoff()
                 return
             time.sleep(min(0.25, deadline - time.time()))
 
     def check_pause(self) -> None:
-        """Block at the top of each fetch loop iteration if backing off."""
+        """Block at the top of each fetch loop iteration if backing off; raise if aborted."""
+        if self._aborted:
+            raise _AbortError("Aborted: cumulative failures exceed successes")
         if self._pause_until > time.time():
             self._wait_backoff()
 
     def _wait_backoff(self) -> None:
         while self._pause_until > time.time():
+            if self._aborted:
+                raise _AbortError("Aborted: cumulative failures exceed successes")
             time.sleep(0.25)
 
     def report_success(self) -> None:
         with self._lock:
-            self._window.append(True)
+            self._total_successes += 1
             if time.time() >= self._pause_until:
-                window_healthy = (
-                    len(self._window) < self._window.maxlen
-                    or self._window.count(True) > self._window.count(False)
-                )
-                if window_healthy:
-                    self.cons_failures = 0
+                self.cons_failures = 0
 
     def report_failure(self) -> tuple[float, bool]:
         """Returns (pause, is_new) — is_new=False means already in backoff (pile-up).
-        Raises RuntimeError at max_failures."""
+        Raises _AbortError if cumulative failures exceed successes or at max_failures."""
         with self._lock:
-            self._window.append(False)
+            self._total_failures += 1
+            if self._total_failures > self._total_successes:
+                self._aborted = True
+                raise _AbortError(
+                    f"Aborted: {self._total_failures} cumulative failures exceed "
+                    f"{self._total_successes} successes"
+                )
             if time.time() < self._pause_until:
                 return self._pause_until - time.time(), False
             self.cons_failures += 1
             if self.cons_failures >= self.max_failures:
-                raise RuntimeError(f"{self.cons_failures} consecutive failures")
+                raise _AbortError(f"{self.cons_failures} consecutive failures")
             rand = random.uniform(0, 1)
             rand2 = 0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)
             pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) - rand2
@@ -460,9 +472,8 @@ def _run_season_game_level(
         if _valid_file(filepath) and not overwrite:
             continue
 
-        shared.check_pause()
-
         try:
+            shared.check_pause()
             df = fetch_game_level_data(game_id, data_type)
             if df is not None and len(df) > 0:
                 game_dir.mkdir(parents=True, exist_ok=True)
@@ -472,17 +483,24 @@ def _run_season_game_level(
                     df.to_parquet(filepath, index=False)
             shared.report_success()
             shared.sleep(local.next_pause())
+        except _AbortError as fatal:
+            print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
+            return
         except Exception as exc:
             try:
                 pause, is_new = shared.report_failure()
                 if is_new:
                     print(f"    Error {data_type} {game_id}: {exc}")
                     print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
-            except RuntimeError as fatal:
+            except _AbortError as fatal:
                 print(f"    Error {data_type} {game_id}: {exc}")
                 print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
                 return
-            shared.check_pause()
+            try:
+                shared.check_pause()
+            except _AbortError as fatal:
+                print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
+                return
 
 
 def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
@@ -584,8 +602,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
 
     max_workers = int(job.get("max_workers", 4))
     max_failures = int(job.get("max_failures", 5))
-    failure_window = int(job.get("failure_window", 20))
-    shared = _SharedRateState(max_failures=max_failures, window=failure_window)
+    shared = _SharedRateState(max_failures=max_failures)
     print(f"\nGame-level import: {len(season_tasks)} batches across {max_workers} workers\n")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
