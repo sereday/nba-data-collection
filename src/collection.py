@@ -166,6 +166,15 @@ class _WorkerDelay:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _valid_file(path: Path, min_bytes: int = 2048) -> bool:
+    """True if the file exists and is at least min_bytes (not an empty/error save)."""
+    return path.exists() and path.stat().st_size >= min_bytes
+
+
+# ---------------------------------------------------------------------------
 # Season-level fetch functions
 # ---------------------------------------------------------------------------
 
@@ -279,7 +288,7 @@ def fetch_team_season_stats(season: str, season_type: str) -> Optional[pd.DataFr
 def get_game_ids_for_season(data_dir: Path, season: str, season_type: str, output_format: str) -> list[str]:
     """Read game IDs from an already-collected player game log file."""
     filepath = data_dir / f"{season}_{season_type}_players.{output_format}"
-    if not filepath.exists():
+    if not _valid_file(filepath):
         return []
     if output_format == "csv":
         df = pd.read_csv(filepath, usecols=["GAME_ID"])
@@ -382,13 +391,13 @@ def get_enabled_stages(job: Dict[str, Any]) -> list[str]:
 def _run_season_game_level(
     season: str,
     season_type: str,
-    applicable_types: list[str],
+    data_type: str,
     output_dir: Path,
     output_format: str,
     overwrite: bool,
     shared: _SharedRateState,
 ) -> None:
-    """Worker: fetch all game-level data for one (season, season_type) batch."""
+    """Worker: fetch one data_type for all games in one (season, season_type) batch."""
     local = _WorkerDelay()
 
     game_ids = get_game_ids_for_season(output_dir, season, season_type, output_format)
@@ -396,35 +405,34 @@ def _run_season_game_level(
         return
 
     random.shuffle(game_ids)
-    print(f"{season} {season_type}: {len(game_ids)} games")
+    print(f"{season} {season_type} [{data_type}]: {len(game_ids)} games")
 
+    game_dir = output_dir / "game_level" / season / season_type / data_type
     for game_id in game_ids:
-        for data_type in applicable_types:
-            game_dir = output_dir / "game_level" / season / season_type / data_type
-            filepath = game_dir / f"{game_id}.{output_format}"
-            if filepath.exists() and not overwrite:
-                continue
+        filepath = game_dir / f"{game_id}.{output_format}"
+        if _valid_file(filepath) and not overwrite:
+            continue
 
-            shared.check_pause()
+        shared.check_pause()
 
+        try:
+            df = fetch_game_level_data(game_id, data_type)
+            if df is not None and len(df) > 0:
+                game_dir.mkdir(parents=True, exist_ok=True)
+                if output_format == "csv":
+                    df.to_csv(filepath, index=False)
+                else:
+                    df.to_parquet(filepath, index=False)
+            shared.report_success()
+            shared.sleep(local.next_pause())
+        except Exception as exc:
+            print(f"    Error {data_type} {game_id}: {exc}")
             try:
-                df = fetch_game_level_data(game_id, data_type)
-                if df is not None and len(df) > 0:
-                    game_dir.mkdir(parents=True, exist_ok=True)
-                    if output_format == "csv":
-                        df.to_csv(filepath, index=False)
-                    else:
-                        df.to_parquet(filepath, index=False)
-                shared.report_success()
-                shared.sleep(local.next_pause())
-            except Exception as exc:
-                print(f"    Error {data_type} {game_id}: {exc}")
-                try:
-                    pause = shared.report_failure()
-                    print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
-                except RuntimeError as fatal:
-                    print(f"    {fatal} — aborting {season} {season_type}")
-                    return
+                pause = shared.report_failure()
+                print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
+            except RuntimeError as fatal:
+                print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
+                return
 
 
 def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
@@ -456,7 +464,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
         # --- Season-level ---
         if "rosters" in season_data_types:
             filepath = output_dir / f"{season}_rosters.{output_format}"
-            if not filepath.exists() or overwrite:
+            if not _valid_file(filepath) or overwrite:
                 df = fetch_roster_data(season)
                 if df is not None:
                     save_data(df, output_dir, f"{season}_rosters", output_format)
@@ -477,7 +485,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
                     continue
 
                 filepath = output_dir / f"{season}_{season_type}_{data_type}.{output_format}"
-                if filepath.exists() and not overwrite:
+                if _valid_file(filepath) and not overwrite:
                     print(f"  Skipping {filepath.name} (already exists)")
                     continue
 
@@ -503,17 +511,15 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
     season_tasks = []
     for season in seasons:
         season_year = int(season[:4])
-        applicable = [
-            dt for dt in game_data_types
-            if GAME_LEVEL_DATA_TYPES[dt][1] is None or season_year >= GAME_LEVEL_DATA_TYPES[dt][1]
-        ]
-        if not applicable:
-            continue
-        for season_type in season_types:
-            min_year = SEASON_TYPE_MIN_YEAR.get(season_type)
-            if min_year is not None and season_year < min_year:
+        for data_type in game_data_types:
+            dt_min_year = GAME_LEVEL_DATA_TYPES[data_type][1]
+            if dt_min_year is not None and season_year < dt_min_year:
                 continue
-            season_tasks.append((season, season_type, applicable))
+            for season_type in season_types:
+                st_min_year = SEASON_TYPE_MIN_YEAR.get(season_type)
+                if st_min_year is not None and season_year < st_min_year:
+                    continue
+                season_tasks.append((season, season_type, data_type))
 
     if not season_tasks:
         return
@@ -527,17 +533,17 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
         futures = {
             executor.submit(
                 _run_season_game_level,
-                season, season_type, applicable,
+                season, season_type, data_type,
                 output_dir, output_format, overwrite, shared,
-            ): (season, season_type)
-            for season, season_type, applicable in season_tasks
+            ): (season, season_type, data_type)
+            for season, season_type, data_type in season_tasks
         }
         for future in as_completed(futures):
-            s, st = futures[future]
+            s, st, dt = futures[future]
             try:
                 future.result()
             except Exception as exc:
-                print(f"  Worker failed for {s} {st}: {exc}")
+                print(f"  Worker failed for {s} {st} [{dt}]: {exc}")
 
 
 def run_job(job: Dict[str, Any]) -> None:
