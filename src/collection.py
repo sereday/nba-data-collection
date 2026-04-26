@@ -244,7 +244,7 @@ def _valid_file(path: Path, min_bytes: int = 2048) -> bool:
     return path.exists() and path.stat().st_size >= min_bytes
 
 
-def _fetch_with_retry(fetch_fn, label: str, max_retries: int = 3) -> Optional[pd.DataFrame]:
+def _fetch_with_retry(fetch_fn, label: str, max_retries: int = 2) -> Optional[pd.DataFrame]:
     """Retry fetch_fn() until it returns a non-empty DataFrame.
     Both None (API error) and empty DataFrame are treated as failures.
     Returns the DataFrame on success, None after all retries are exhausted."""
