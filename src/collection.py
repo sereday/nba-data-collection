@@ -287,6 +287,7 @@ def fetch_league_game_log(season: str, season_type: str, player_or_team: str) ->
             season=season,
             season_type_all_star=api_season_type,
             player_or_team_abbreviation=player_or_team,
+            timeout=60,
         )
         df = log.get_data_frames()[0]
         print(f"  Retrieved {len(df):,} records")
@@ -306,6 +307,7 @@ def fetch_player_bio_data(season: str, season_type: str) -> Optional[pd.DataFram
             season=season,
             season_type_all_star=api_season_type,
             per_mode_simple="Totals",
+            timeout=60,
         )
         df = log.get_data_frames()[0]
         print(f"  Retrieved {len(df):,} records")
@@ -320,7 +322,7 @@ def fetch_roster_data(season: str) -> Optional[pd.DataFrame]:
     print(f"Fetching rosters for {season}...")
 
     try:
-        result = PlayerIndex(season=season)
+        result = PlayerIndex(season=season, timeout=60)
         df = result.get_data_frames()[0]
         df = df.rename(columns={"PERSON_ID": "PLAYER_ID"})
         print(f"  Retrieved {len(df):,} roster records")
@@ -346,12 +348,14 @@ def fetch_player_season_stats(season: str, season_type: str) -> Optional[pd.Data
                 season_type_all_star=api_season_type,
                 per_mode48="Totals",
                 stat_category_abbreviation="PTS",
+                timeout=60,
             )
         else:
             stats = LeagueDashPlayerStats(
                 season=season,
                 season_type_all_star=api_season_type,
                 per_mode_detailed="Totals",
+                timeout=60,
             )
         df = stats.get_data_frames()[0]
         print(f"  Retrieved {len(df):,} player season records")
@@ -371,6 +375,7 @@ def fetch_team_season_stats(season: str, season_type: str) -> Optional[pd.DataFr
             season=season,
             season_type_all_star=api_season_type,
             per_mode_detailed="Totals",
+            timeout=60,
         )
         df = stats.get_data_frames()[0]
         print(f"  Retrieved {len(df):,} team season records")
