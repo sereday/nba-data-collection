@@ -85,6 +85,8 @@ GAME_LEVEL_DATA_TYPES: dict[str, tuple] = {
 # Season-level data types only available from a certain year.
 # Types not listed here are attempted for all seasons.
 SEASON_DATA_TYPE_MIN_YEAR: dict[str, int] = {
+    "players":             1996,  # LeagueGameLog (players); pre-97 covered by patch stage
+    "teams":               1996,  # LeagueGameLog (teams); pre-97 covered by patch stage
     "player_season_stats": 1996,  # LeagueDashPlayerStats; pre-97 covered by patch stage
     "team_season_stats":   1996,  # LeagueDashTeamStats; pre-97 covered by patch stage
     "player_bios":         1996,  # LeagueDashPlayerBioStats; PBP era only
