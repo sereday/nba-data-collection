@@ -187,7 +187,7 @@ class _WorkerDelay:
         base = self.last_pause / (1 + rand)
         if self._recent:
             base = max(base, rand2 * min(self._recent))
-        pause = max(base, 0.1 + random.uniform(0, 0.1))
+        pause = max(base, 0.1 + random.uniform(0, 0.1)) + random.uniform(0.05, 0.15)
         self.last_pause = pause
         self._recent.append(pause)
         return pause
