@@ -129,13 +129,15 @@ class _SharedRateState:
 
     def report_success(self) -> None:
         with self._lock:
-            self.cons_failures = 0
+            if time.time() >= self._pause_until:
+                self.cons_failures = 0
 
-    def report_failure(self) -> float:
-        """Returns backoff duration, raises RuntimeError at max_failures."""
+    def report_failure(self) -> tuple[float, bool]:
+        """Returns (pause, is_new) — is_new=False means already in backoff (pile-up).
+        Raises RuntimeError at max_failures."""
         with self._lock:
             if time.time() < self._pause_until:
-                return self._pause_until - time.time()
+                return self._pause_until - time.time(), False
             self.cons_failures += 1
             if self.cons_failures >= self.max_failures:
                 raise RuntimeError(f"{self.cons_failures} consecutive failures")
@@ -143,7 +145,7 @@ class _SharedRateState:
             rand2 = 0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)
             pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) - rand2
             self._pause_until = time.time() + pause
-            return pause
+            return pause, True
 
 
 class _WorkerDelay:
@@ -426,13 +428,16 @@ def _run_season_game_level(
             shared.report_success()
             shared.sleep(local.next_pause())
         except Exception as exc:
-            print(f"    Error {data_type} {game_id}: {exc}")
             try:
-                pause = shared.report_failure()
-                print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
+                pause, is_new = shared.report_failure()
+                if is_new:
+                    print(f"    Error {data_type} {game_id}: {exc}")
+                    print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
             except RuntimeError as fatal:
+                print(f"    Error {data_type} {game_id}: {exc}")
                 print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
                 return
+            shared.check_pause()
 
 
 def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
