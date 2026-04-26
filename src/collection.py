@@ -255,9 +255,9 @@ def _fetch_with_retry(fetch_fn, label: str, max_retries: int = 3) -> Optional[pd
         if attempt < max_retries - 1:
             reason = "empty response" if result is not None else "error"
             delay = 5 * (2 ** attempt) + random.uniform(0, 3)
-            print(f"  {label}: {reason}, retrying in {delay:.1f}s ({attempt + 1}/{max_retries})")
+            if attempt == 0:
+                print(f"  {label}: {reason}, retrying in {delay:.1f}s ({attempt + 1}/{max_retries})")
             time.sleep(delay)
-    print(f"  {label}: no data after {max_retries} attempts")
     return None
 
 
