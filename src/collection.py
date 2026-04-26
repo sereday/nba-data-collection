@@ -356,10 +356,11 @@ def fetch_boxscore_quarters(game_id: str) -> Optional[pd.DataFrame]:
             periods.append(df)
             time.sleep(0.3)
         except Exception:
-            break
-    if not periods:
-        raise RuntimeError(f"No period data returned for game {game_id}")
-    return pd.concat(periods, ignore_index=True)
+            if not periods:
+                raise  # Period 1 API error — propagate so worker triggers backoff
+            break    # Period N+1 error — natural end, return what we have
+    return pd.concat(periods, ignore_index=True) if periods else None
+    # None means period 1 returned empty (no data for this game) — not an API error
 
 
 def fetch_game_level_data(game_id: str, data_type: str) -> Optional[pd.DataFrame]:
