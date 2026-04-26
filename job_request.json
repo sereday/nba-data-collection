@@ -24,6 +24,7 @@
   "output_dir": "./data",
   "max_workers": 4,
   "max_failures": 5,
+  "failure_window": 20,
   "stages": ["import", "patch", "import_validate", "clean", "impute", "features", "gpm"],
   "skip_stages": [],
   "overwrite": false

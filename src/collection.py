@@ -104,13 +104,17 @@ class _SharedRateState:
                   RuntimeError after max_failures consecutive failures.
     Pile-up guard: if a backoff is already in effect when a new failure arrives,
                    cons_failures is not incremented (same rate-limit event).
+    Window guard: cons_failures only resets after a success if the rolling
+                  window shows failures <= successes. Prevents intermittent
+                  rate-limiting from holding the counter permanently at 1.
     """
 
-    def __init__(self, max_failures: int = 5):
+    def __init__(self, max_failures: int = 5, window: int = 20):
         self._lock = threading.Lock()
         self.cons_failures = 0
         self.max_failures = max_failures
         self._pause_until = 0.0
+        self._window: deque = deque(maxlen=window)
 
     def sleep(self, seconds: float) -> None:
         """Success-path sleep, interruptible if a backoff fires mid-sleep."""
@@ -132,13 +136,20 @@ class _SharedRateState:
 
     def report_success(self) -> None:
         with self._lock:
+            self._window.append(True)
             if time.time() >= self._pause_until:
-                self.cons_failures = 0
+                window_healthy = (
+                    len(self._window) < self._window.maxlen
+                    or self._window.count(True) > self._window.count(False)
+                )
+                if window_healthy:
+                    self.cons_failures = 0
 
     def report_failure(self) -> tuple[float, bool]:
         """Returns (pause, is_new) — is_new=False means already in backoff (pile-up).
         Raises RuntimeError at max_failures."""
         with self._lock:
+            self._window.append(False)
             if time.time() < self._pause_until:
                 return self._pause_until - time.time(), False
             self.cons_failures += 1
@@ -573,7 +584,8 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
 
     max_workers = int(job.get("max_workers", 4))
     max_failures = int(job.get("max_failures", 5))
-    shared = _SharedRateState(max_failures=max_failures)
+    failure_window = int(job.get("failure_window", 20))
+    shared = _SharedRateState(max_failures=max_failures, window=failure_window)
     print(f"\nGame-level import: {len(season_tasks)} batches across {max_workers} workers\n")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
