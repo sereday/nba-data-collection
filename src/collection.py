@@ -6,6 +6,7 @@ This module handles fetching data from the NBA API and saving it to disk.
 from __future__ import annotations
 
 import random
+import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -93,21 +94,66 @@ SEASON_DATA_TYPE_MIN_YEAR: dict[str, int] = {
 # Adaptive rate-limit delay
 # ---------------------------------------------------------------------------
 
-class _AdaptiveDelay:
-    """Per-worker adaptive delay with exponential backoff on failures.
+class _SharedRateState:
+    """Shared across all workers — owns failure counting and backoff timing.
 
-    Success path: self-tunes toward the fastest recently-proven-safe delay.
-    Failure path: exp(cons_failures**1.25 * (1+rand)) — raises RuntimeError
-                  after max_failures consecutive failures.
+    Failure path: exp(cons_failures**1.25 * (1+rand)) backoff, raised as
+                  RuntimeError after max_failures consecutive failures.
+    Pile-up guard: if a backoff is already in effect when a new failure arrives,
+                   cons_failures is not incremented (same rate-limit event).
     """
 
     def __init__(self, max_failures: int = 5):
+        self._lock = threading.Lock()
         self.cons_failures = 0
+        self.max_failures = max_failures
+        self._pause_until = 0.0
+
+    def sleep(self, seconds: float) -> None:
+        """Success-path sleep, interruptible if a backoff fires mid-sleep."""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if self._pause_until > time.time():
+                self._wait_backoff()
+                return
+            time.sleep(min(0.25, deadline - time.time()))
+
+    def check_pause(self) -> None:
+        """Block at the top of each fetch loop iteration if backing off."""
+        if self._pause_until > time.time():
+            self._wait_backoff()
+
+    def _wait_backoff(self) -> None:
+        while self._pause_until > time.time():
+            time.sleep(0.25)
+
+    def report_success(self) -> None:
+        with self._lock:
+            self.cons_failures = 0
+
+    def report_failure(self) -> float:
+        """Returns backoff duration, raises RuntimeError at max_failures."""
+        with self._lock:
+            if time.time() < self._pause_until:
+                return self._pause_until - time.time()
+            self.cons_failures += 1
+            if self.cons_failures >= self.max_failures:
+                raise RuntimeError(f"{self.cons_failures} consecutive failures")
+            rand = random.uniform(0, 1)
+            rand2 = 0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)
+            pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) - rand2
+            self._pause_until = time.time() + pause
+            return pause
+
+
+class _WorkerDelay:
+    """Per-worker success-path delay, self-tuning toward fastest proven-safe pace."""
+
+    def __init__(self):
         self.last_pause = 0.5
         self._recent: deque = deque(maxlen=10)
-        self.max_failures = max_failures
 
-    def after_success(self) -> float:
+    def next_pause(self) -> float:
         rand = random.uniform(0, 1)
         rand2 = 0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)
         base = self.last_pause / (1 + rand)
@@ -116,17 +162,6 @@ class _AdaptiveDelay:
         pause = max(base, 0.1 + random.uniform(0, 0.1))
         self.last_pause = pause
         self._recent.append(pause)
-        self.cons_failures = 0
-        return pause
-
-    def after_failure(self) -> float:
-        self.cons_failures += 1
-        if self.cons_failures >= self.max_failures:
-            raise RuntimeError(f"{self.cons_failures} consecutive failures")
-        rand = random.uniform(0, 1)
-        rand2 = 0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)
-        pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) - rand2
-        self.last_pause = pause
         return pause
 
 
@@ -351,10 +386,10 @@ def _run_season_game_level(
     output_dir: Path,
     output_format: str,
     overwrite: bool,
-    max_failures: int,
+    shared: _SharedRateState,
 ) -> None:
     """Worker: fetch all game-level data for one (season, season_type) batch."""
-    delay = _AdaptiveDelay(max_failures=max_failures)
+    local = _WorkerDelay()
 
     game_ids = get_game_ids_for_season(output_dir, season, season_type, output_format)
     if not game_ids:
@@ -370,6 +405,8 @@ def _run_season_game_level(
             if filepath.exists() and not overwrite:
                 continue
 
+            shared.check_pause()
+
             try:
                 df = fetch_game_level_data(game_id, data_type)
                 if df is not None and len(df) > 0:
@@ -378,13 +415,13 @@ def _run_season_game_level(
                         df.to_csv(filepath, index=False)
                     else:
                         df.to_parquet(filepath, index=False)
-                time.sleep(delay.after_success())
+                shared.report_success()
+                shared.sleep(local.next_pause())
             except Exception as exc:
                 print(f"    Error {data_type} {game_id}: {exc}")
                 try:
-                    pause = delay.after_failure()
-                    print(f"    Backing off {pause:.1f}s ({delay.cons_failures} consecutive)")
-                    time.sleep(pause)
+                    pause = shared.report_failure()
+                    print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
                 except RuntimeError as fatal:
                     print(f"    {fatal} — aborting {season} {season_type}")
                     return
@@ -483,6 +520,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
 
     max_workers = int(job.get("max_workers", 4))
     max_failures = int(job.get("max_failures", 5))
+    shared = _SharedRateState(max_failures=max_failures)
     print(f"\nGame-level import: {len(season_tasks)} batches across {max_workers} workers\n")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -490,7 +528,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
             executor.submit(
                 _run_season_game_level,
                 season, season_type, applicable,
-                output_dir, output_format, overwrite, max_failures,
+                output_dir, output_format, overwrite, shared,
             ): (season, season_type)
             for season, season_type, applicable in season_tasks
         }
