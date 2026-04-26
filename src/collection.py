@@ -492,7 +492,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
     print(f"Output format: {output_format}")
     print(f"Overwrite: {overwrite}\n")
 
-    missing_log = output_dir / "import_missing.csv"
+    missing_log = output_dir.parent / "import_missing.csv"
 
     for season in seasons:
         season_year = int(season[:4])
