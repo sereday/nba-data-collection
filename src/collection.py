@@ -194,6 +194,48 @@ class _WorkerDelay:
 
 
 # ---------------------------------------------------------------------------
+# Ping log
+# ---------------------------------------------------------------------------
+
+class _PingLog:
+    """Thread-safe buffer of per-request (duration, success) entries, flushed to CSV."""
+
+    _HEADER = ["timestamp", "season", "season_type", "data_type", "duration_s", "success"]
+
+    def __init__(self, path: Path, flush_every: int = 50):
+        self._lock = threading.Lock()
+        self._path = path
+        self._flush_every = flush_every
+        self._buffer: list = []
+        self._header_written = path.exists()
+
+    def record(self, season: str, season_type: str, data_type: str, duration_s: float, success: bool) -> None:
+        from datetime import datetime
+        entry = [datetime.now().isoformat(), season, season_type, data_type, f"{duration_s:.3f}", int(success)]
+        with self._lock:
+            self._buffer.append(entry)
+            if len(self._buffer) >= self._flush_every:
+                self._flush_locked()
+
+    def flush(self) -> None:
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_locked(self) -> None:
+        if not self._buffer:
+            return
+        import csv
+        write_header = not self._header_written
+        with open(self._path, "a", newline="") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(self._HEADER)
+                self._header_written = True
+            writer.writerows(self._buffer)
+        self._buffer.clear()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -455,6 +497,7 @@ def _run_season_game_level(
     output_format: str,
     overwrite: bool,
     shared: _SharedRateState,
+    ping_log: _PingLog,
 ) -> None:
     """Worker: fetch one data_type for all games in one (season, season_type) batch."""
     local = _WorkerDelay()
@@ -472,21 +515,26 @@ def _run_season_game_level(
         if _valid_file(filepath) and not overwrite:
             continue
 
+        t0 = 0.0
         try:
             shared.check_pause()
+            t0 = time.time()
             df = fetch_game_level_data(game_id, data_type)
+            duration = time.time() - t0
             if df is not None and len(df) > 0:
                 game_dir.mkdir(parents=True, exist_ok=True)
                 if output_format == "csv":
                     df.to_csv(filepath, index=False)
                 else:
                     df.to_parquet(filepath, index=False)
+            ping_log.record(season, season_type, data_type, duration, True)
             shared.report_success()
             shared.sleep(local.next_pause())
         except _AbortError as fatal:
             print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
             return
         except Exception as exc:
+            ping_log.record(season, season_type, data_type, time.time() - t0, False)
             try:
                 pause, is_new = shared.report_failure()
                 if is_new:
@@ -603,6 +651,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
     max_workers = int(job.get("max_workers", 4))
     max_failures = int(job.get("max_failures", 5))
     shared = _SharedRateState(max_failures=max_failures)
+    ping_log = _PingLog(output_dir.parent / "ping_log.csv")
     print(f"\nGame-level import: {len(season_tasks)} batches across {max_workers} workers\n")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -610,7 +659,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
             executor.submit(
                 _run_season_game_level,
                 season, season_type, data_type,
-                output_dir, output_format, overwrite, shared,
+                output_dir, output_format, overwrite, shared, ping_log,
             ): (season, season_type, data_type)
             for season, season_type, data_type in season_tasks
         }
@@ -620,6 +669,9 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
                 future.result()
             except Exception as exc:
                 print(f"  Worker failed for {s} {st} [{dt}]: {exc}")
+
+    ping_log.flush()
+    print(f"Ping log saved to {ping_log._path}")
 
 
 def run_job(job: Dict[str, Any]) -> None:
