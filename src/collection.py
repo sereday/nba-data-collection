@@ -176,6 +176,35 @@ def _valid_file(path: Path, min_bytes: int = 2048) -> bool:
     return path.exists() and path.stat().st_size >= min_bytes
 
 
+def _fetch_with_retry(fetch_fn, label: str, max_retries: int = 3) -> Optional[pd.DataFrame]:
+    """Retry fetch_fn() until it returns a non-empty DataFrame.
+    Both None (API error) and empty DataFrame are treated as failures.
+    Returns the DataFrame on success, None after all retries are exhausted."""
+    for attempt in range(max_retries):
+        result = fetch_fn()
+        if result is not None and len(result) > 0:
+            return result
+        if attempt < max_retries - 1:
+            reason = "empty response" if result is not None else "error"
+            delay = 5 * (2 ** attempt) + random.uniform(0, 3)
+            print(f"  {label}: {reason}, retrying in {delay:.1f}s ({attempt + 1}/{max_retries})")
+            time.sleep(delay)
+    print(f"  {label}: no data after {max_retries} attempts")
+    return None
+
+
+def _log_missing(log_path: Path, season: str, season_type: str, data_type: str) -> None:
+    """Append an unexpected missing-data entry to the review log."""
+    import csv
+    from datetime import datetime
+    write_header = not log_path.exists()
+    with open(log_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow(["timestamp", "season", "season_type", "data_type"])
+        writer.writerow([datetime.now().isoformat(), season, season_type, data_type])
+
+
 # ---------------------------------------------------------------------------
 # Season-level fetch functions
 # ---------------------------------------------------------------------------
@@ -463,6 +492,8 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
     print(f"Output format: {output_format}")
     print(f"Overwrite: {overwrite}\n")
 
+    missing_log = output_dir / "import_missing.csv"
+
     for season in seasons:
         season_year = int(season[:4])
 
@@ -470,9 +501,11 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
         if "rosters" in season_data_types:
             filepath = output_dir / f"{season}_rosters.{output_format}"
             if not _valid_file(filepath) or overwrite:
-                df = fetch_roster_data(season)
+                df = _fetch_with_retry(lambda: fetch_roster_data(season), f"{season} rosters")
                 if df is not None:
                     save_data(df, output_dir, f"{season}_rosters", output_format)
+                else:
+                    _log_missing(missing_log, season, "all", "rosters")
             else:
                 print(f"  Skipping {filepath.name} (already exists)")
 
@@ -494,20 +527,24 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
                     print(f"  Skipping {filepath.name} (already exists)")
                     continue
 
+                label = f"{season} {season_type} {data_type}"
                 if data_type in ["players", "teams"]:
-                    df = fetch_league_game_log(season, season_type, PLAYER_OR_TEAM_MAP[data_type])
+                    pt = PLAYER_OR_TEAM_MAP[data_type]
+                    df = _fetch_with_retry(lambda pt=pt: fetch_league_game_log(season, season_type, pt), label)
                 elif data_type == "player_bios":
-                    df = fetch_player_bio_data(season, season_type)
+                    df = _fetch_with_retry(lambda: fetch_player_bio_data(season, season_type), label)
                 elif data_type == "player_season_stats":
-                    df = fetch_player_season_stats(season, season_type)
+                    df = _fetch_with_retry(lambda: fetch_player_season_stats(season, season_type), label)
                 elif data_type == "team_season_stats":
-                    df = fetch_team_season_stats(season, season_type)
+                    df = _fetch_with_retry(lambda: fetch_team_season_stats(season, season_type), label)
                 else:
                     print(f"Unknown data type: {data_type}")
                     continue
 
-                if df is not None and len(df) > 0:
+                if df is not None:
                     save_data(df, output_dir, f"{season}_{season_type}_{data_type}", output_format)
+                else:
+                    _log_missing(missing_log, season, season_type, data_type)
 
     # --- Game-level (parallel by season) ---
     if not game_data_types:
