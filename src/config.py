@@ -55,9 +55,9 @@ def generate_seasons(start_season: str, end_season: str) -> list[str]:
 
 
 def build_season_plan(job: Dict[str, Any]) -> list[str]:
-    """Build the list of seasons to process from job config."""
+    """Build the list of seasons to process from job config, most recent first."""
     if "season_start" in job and "season_end" in job:
-        return generate_seasons(job["season_start"], job["season_end"])
+        return list(reversed(generate_seasons(job["season_start"], job["season_end"])))
     if "seasons" in job:
-        return list(job["seasons"])
+        return list(reversed(job["seasons"]))
     raise ValueError("job_request.json must define either season_start/season_end or seasons")
