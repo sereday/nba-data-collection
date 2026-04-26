@@ -22,7 +22,7 @@
   ],
   "output_format": "csv",
   "output_dir": "./data",
-  "max_workers": 4,
+  "max_workers": 3,
   "max_failures": 5,
   "stages": ["import", "patch", "import_validate", "clean", "impute", "features", "gpm"],
   "skip_stages": [],
