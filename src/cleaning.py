@@ -24,6 +24,9 @@ def run_clean_stage(job: Dict[str, Any]) -> None:
     all_player_dfs = []
     all_team_dfs = []
     all_bio_dfs = []
+    all_roster_dfs = []
+    all_player_season_dfs = []
+    all_team_season_dfs = []
 
     if not output_dir.exists():
         print(f"Output directory does not exist: {output_dir}")
@@ -34,20 +37,29 @@ def run_clean_stage(job: Dict[str, Any]) -> None:
             continue
 
         parts = filepath.stem.split("_")
-        if len(parts) < 3:
-            continue
 
-        # Parse filename: {season}_{season_type}_{data_type}
-        # data_type might contain underscores (like "player_bios")
-        # Try to identify data_type by checking known types from the end
+        # Parse filename: either {season}_{season_type}_{data_type} or {season}_{data_type}
+        # data_type may contain underscores (e.g. "player_season_stats")
         data_type = None
-        for i in range(len(parts) - 1, 1, -1):  # Start from end, leave at least 2 parts for season+season_type
-            potential_data_type = "_".join(parts[i:])
-            if potential_data_type in {"players", "teams", "player_bios"}:
+        season_type = None
+
+        # Try season-type-aware format first: need at least 3 parts
+        if len(parts) >= 3:
+            for i in range(len(parts) - 1, 1, -1):
+                potential_data_type = "_".join(parts[i:])
+                if potential_data_type in {"players", "teams", "player_bios", "player_season_stats", "team_season_stats"}:
+                    data_type = potential_data_type
+                    season_type = parts[i - 1]
+                    season = "_".join(parts[:i - 1])
+                    break
+
+        # Try season-only format: {season}_rosters
+        if data_type is None and len(parts) >= 2:
+            potential_data_type = "_".join(parts[1:])
+            if potential_data_type == "rosters":
                 data_type = potential_data_type
-                season_type = parts[i-1]
-                season = "_".join(parts[:i-1])
-                break
+                season_type = None
+                season = parts[0]
 
         if data_type is None:
             continue
@@ -66,6 +78,12 @@ def run_clean_stage(job: Dict[str, Any]) -> None:
             all_team_dfs.append(df)
         elif data_type == "player_bios":
             all_bio_dfs.append(df)
+        elif data_type == "rosters":
+            all_roster_dfs.append(df)
+        elif data_type == "player_season_stats":
+            all_player_season_dfs.append(df)
+        elif data_type == "team_season_stats":
+            all_team_season_dfs.append(df)
 
     if not all_player_dfs:
         print("No player data found, skipping clean stage.")
@@ -74,16 +92,34 @@ def run_clean_stage(job: Dict[str, Any]) -> None:
     # Concatenate all player data across seasons and types
     player_df = pd.concat(all_player_dfs, ignore_index=True)
 
-    # Concatenate all bio data
+    # Concatenate all roster data
+    if all_roster_dfs:
+        roster_df = pd.concat(all_roster_dfs, ignore_index=True)
+        # Outer join player to roster on PLAYER_ID (and TEAM_ID if needed)
+        # Roster data typically includes player info like position, height, weight, etc.
+        player_df = player_df.merge(roster_df, on=['PLAYER_ID'], how='left', suffixes=('', '_roster'))
+    else:
+        print("No roster data found, proceeding without roster join.")
+
+    # Keep bio data available but don't join it to player data
     if all_bio_dfs:
         bio_df = pd.concat(all_bio_dfs, ignore_index=True)
-        # Outer join player to bio on PLAYER_ID (and TEAM_ID if needed)
-        # Retain all fields except pts through ast_pct from bio
-        stat_cols_to_drop = ['PTS', 'REB', 'AST', 'FG_PCT', 'FG3_PCT', 'FT_PCT', 'OREB', 'DREB', 'STL', 'BLK', 'TOV', 'PF', 'AST_PCT']  # approximate list
-        bio_df = bio_df.drop(columns=[col for col in stat_cols_to_drop if col in bio_df.columns], errors='ignore')
-        player_df = player_df.merge(bio_df, on=['PLAYER_ID', 'TEAM_ID'], how='outer', suffixes=('', '_bio'))
+        print(f"Bio data available with {len(bio_df)} records (not joined to player data)")
     else:
-        print("No bio data found, proceeding without bio join.")
+        print("No bio data found.")
+
+    # Concatenate season stats data
+    if all_player_season_dfs:
+        player_season_df = pd.concat(all_player_season_dfs, ignore_index=True)
+        print(f"Player season stats available with {len(player_season_df)} records")
+    else:
+        print("No player season stats found.")
+
+    if all_team_season_dfs:
+        team_season_df = pd.concat(all_team_season_dfs, ignore_index=True)
+        print(f"Team season stats available with {len(team_season_df)} records")
+    else:
+        print("No team season stats found.")
 
     # Concatenate all team data
     if all_team_dfs:

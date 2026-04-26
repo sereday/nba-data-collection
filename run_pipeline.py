@@ -34,7 +34,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-stages",
         nargs="+",
-        help="Pipeline stages to skip, e.g. collect.",
+        help="Pipeline stages to skip, e.g. clean.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        default=False,
+        help="Re-fetch and overwrite files that already exist on disk.",
     )
     return parser.parse_args()
 
@@ -47,5 +53,7 @@ if __name__ == "__main__":
         job["stages"] = args.stages
     if args.skip_stages:
         job["skip_stages"] = args.skip_stages
+    if args.overwrite:
+        job["overwrite"] = True
 
     main(job)
