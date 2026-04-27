@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 from nba_api.stats.endpoints import (
-    BoxScoreHustleV2,
+    HustleStatsBoxScore,
     BoxScoreMatchupsV3,
     BoxScoreMiscV3,
     BoxScorePlayerTrackV3,
@@ -77,7 +77,7 @@ GAME_LEVEL_DATA_TYPES: dict[str, tuple] = {
     "boxscore_matchups":    (BoxScoreMatchupsV3, 2013),
     "boxscore_playertrack": (BoxScorePlayerTrackV3, 2013),
     "boxscore_misc":        (BoxScoreMiscV3, 2013),
-    "boxscore_hustle":      (BoxScoreHustleV2, 2013),
+    "boxscore_hustle":      (HustleStatsBoxScore, 2013),
     "game_rotation":        (GameRotation, 2005),
     "playbyplay":           (PlayByPlayV3, 2019),
 }
@@ -445,6 +445,9 @@ def fetch_game_level_data(game_id: str, data_type: str) -> Optional[pd.DataFrame
         if data_type == "game_rotation":
             tables = [df for df in result.get_data_frames() if not df.empty]
             return pd.concat(tables, ignore_index=True) if tables else None
+        if data_type == "boxscore_hustle":
+            df = result.get_data_frames()[1]  # [0] is status row, [1] is player stats
+            return df if not df.empty else None
         df = result.get_data_frames()[0]
         return df if not df.empty else None
     except (KeyError, IndexError):
