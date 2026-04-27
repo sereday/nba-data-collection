@@ -170,7 +170,7 @@ def _run_player_impute(season_plan, data_dir, cleaned_df, output_format):
     join_keys = ["PLAYER_ID", "TEAM_ID", "season", "season_type"]
     imp_df = _compute_imputed(agg_df, season_stats_df, join_keys, present_stats)
 
-    _save_impute_describe(imp_df, present_stats, os.path.join(data_dir, "validation", "impute_describe_player.csv"))
+    _save_impute_describe(imp_df, present_stats, os.path.join(os.path.dirname(data_dir), "validation", "impute_describe_player.csv"))
 
     result = _apply_imputed(cleaned_df, imp_df, join_keys, present_stats)
 
@@ -211,7 +211,7 @@ def _run_team_impute(season_plan, data_dir, output_format):
     join_keys = ["TEAM_ID", "season", "season_type"]
     imp_df = _compute_imputed(agg_df, season_stats_df, join_keys, present_stats)
 
-    _save_impute_describe(imp_df, present_stats, os.path.join(data_dir, "validation", "impute_describe_team.csv"))
+    _save_impute_describe(imp_df, present_stats, os.path.join(os.path.dirname(data_dir), "validation", "impute_describe_team.csv"))
 
     result = _apply_imputed(team_logs, imp_df, join_keys, present_stats)
 
