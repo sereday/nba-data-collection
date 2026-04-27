@@ -555,13 +555,12 @@ def _run_season_game_level(
             return
         except Exception as exc:
             ping_log.record(season, season_type, data_type, time.time() - t0, False)
+            print(f"    Error {data_type} {game_id}: {exc}")
             try:
                 pause, is_new = shared.report_failure()
                 if is_new:
-                    print(f"    Error {data_type} {game_id}: {exc}")
                     print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
             except _AbortError as fatal:
-                print(f"    Error {data_type} {game_id}: {exc}")
                 print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
                 return
             try:
