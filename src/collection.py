@@ -440,12 +440,15 @@ def fetch_game_level_data(game_id: str, data_type: str) -> Optional[pd.DataFrame
         return fetch_boxscore_quarters(game_id)
 
     endpoint_class, _ = GAME_LEVEL_DATA_TYPES[data_type]
-    result = endpoint_class(game_id=game_id)
-    if data_type == "game_rotation":
-        tables = [df for df in result.get_data_frames() if not df.empty]
-        return pd.concat(tables, ignore_index=True) if tables else None
-    df = result.get_data_frames()[0]
-    return df if not df.empty else None
+    try:
+        result = endpoint_class(game_id=game_id)
+        if data_type == "game_rotation":
+            tables = [df for df in result.get_data_frames() if not df.empty]
+            return pd.concat(tables, ignore_index=True) if tables else None
+        df = result.get_data_frames()[0]
+        return df if not df.empty else None
+    except (KeyError, IndexError):
+        return None
 
 
 # ---------------------------------------------------------------------------
