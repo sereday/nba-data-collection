@@ -115,7 +115,7 @@ def _compute_imputed(agg_df, season_stats_df, group_keys, present_stats):
             continue
         missing_stat = np.clip(merged[f"{s}_season"] - merged[f"{s}_log_sum"], 0, None)
         missing_gp = np.clip(merged["GP_season"] - merged[f"{s}_log_count"], 0, None)
-        imp = np.where(missing_gp > 0, missing_stat / missing_gp, 0.0)
+        imp = np.where(missing_gp > 0, missing_stat / missing_gp.replace(0, np.nan), 0.0)
         merged[f"{s}_imp"] = imp
 
     imp_cols = group_keys + [f"{s}_imp" for s in present_stats if f"{s}_imp" in merged.columns]
