@@ -122,6 +122,15 @@ def _compute_imputed(agg_df, season_stats_df, group_keys, present_stats):
     return merged[imp_cols]
 
 
+def _save_impute_describe(imp_df, present_stats, out_path):
+    imp_cols = [f"{s}_imp" for s in present_stats if f"{s}_imp" in imp_df.columns]
+    if not imp_cols:
+        return
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    imp_df[imp_cols].describe().to_csv(out_path)
+    print(f"Saved impute describe to {out_path}")
+
+
 def _apply_imputed(cleaned_df, imp_df, group_keys, present_stats):
     df = cleaned_df.merge(imp_df, on=group_keys, how="left")
     for s in present_stats:
@@ -161,6 +170,8 @@ def _run_player_impute(season_plan, data_dir, cleaned_df, output_format):
     join_keys = ["PLAYER_ID", "TEAM_ID", "season", "season_type"]
     imp_df = _compute_imputed(agg_df, season_stats_df, join_keys, present_stats)
 
+    _save_impute_describe(imp_df, present_stats, os.path.join(data_dir, "validation", "impute_describe_player.csv"))
+
     result = _apply_imputed(cleaned_df, imp_df, join_keys, present_stats)
 
     ext = "parquet" if output_format == "parquet" else "csv"
@@ -199,6 +210,8 @@ def _run_team_impute(season_plan, data_dir, output_format):
 
     join_keys = ["TEAM_ID", "season", "season_type"]
     imp_df = _compute_imputed(agg_df, season_stats_df, join_keys, present_stats)
+
+    _save_impute_describe(imp_df, present_stats, os.path.join(data_dir, "validation", "impute_describe_team.csv"))
 
     result = _apply_imputed(team_logs, imp_df, join_keys, present_stats)
 
