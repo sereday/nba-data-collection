@@ -246,7 +246,7 @@ class _PingLog:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _valid_file(path: Path, min_bytes: int = 2048) -> bool:
+def _valid_file(path: Path, min_bytes: int = 1536) -> bool:
     """True if the file exists and is at least min_bytes (not an empty/error save)."""
     return path.exists() and path.stat().st_size >= min_bytes
 
