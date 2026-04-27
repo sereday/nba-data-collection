@@ -9,10 +9,10 @@
   "data_types": [
     "players", "teams", "rosters",
     "player_season_stats", "team_season_stats",
-    "boxscore_quarters",
-    "boxscore_matchups", "boxscore_playertrack",
+    "game_rotation", "playbyplay",
     "boxscore_misc", "boxscore_hustle",
-    "game_rotation", "playbyplay"
+    "boxscore_quarters",
+    "boxscore_matchups", "boxscore_playertrack"
   ],
   "data_types_note": [
     "Season-level: players, teams, rosters,",
@@ -22,7 +22,7 @@
   ],
   "output_format": "csv",
   "output_dir": "./data",
-  "max_workers": 3,
+  "max_workers": 1,
   "max_failures": 5,
   "stages": ["import", "patch", "import_validate", "clean", "impute", "features", "gpm"],
   "skip_stages": [],
