@@ -111,7 +111,7 @@ class _AbortError(Exception):
 
 
 class _VpnSwitcher:
-    """Disconnect/reconnect ProtonVPN via CLI. Assumes 'protonvpn-cli' is on PATH."""
+    """Disconnect/reconnect Mullvad via CLI. Assumes 'mullvad' is on PATH."""
 
     def __init__(self, max_switches: int = 5):
         self._lock = threading.Lock()
@@ -123,7 +123,7 @@ class _VpnSwitcher:
         return self._count >= self.max_switches
 
     def switch(self) -> bool:
-        """Disconnect then reconnect ProtonVPN to a random server for a fresh IP. Returns True on success."""
+        """Disconnect then reconnect Mullvad to a random server for a fresh IP. Returns True on success."""
         with self._lock:
             if self._count >= self.max_switches:
                 print(f"  VPN: max switches ({self.max_switches}) exhausted")
@@ -133,15 +133,15 @@ class _VpnSwitcher:
 
         print(f"  VPN switch #{n}/{self.max_switches}: disconnecting...")
         try:
-            subprocess.run(["protonvpn-cli", "disconnect"], timeout=15, capture_output=True, check=False)
+            subprocess.run(["mullvad", "disconnect"], timeout=15, capture_output=True, check=False)
             time.sleep(2)
             print(f"  VPN switch #{n}/{self.max_switches}: connecting to new server...")
-            subprocess.run(["protonvpn-cli", "connect", "--random"], timeout=30, capture_output=True, check=False)
+            subprocess.run(["mullvad", "connect"], timeout=30, capture_output=True, check=False)
             time.sleep(5)
             print(f"  VPN switch #{n}/{self.max_switches}: connected")
             return True
         except FileNotFoundError:
-            print("  VPN switch failed: 'protonvpn-cli' not found — is ProtonVPN CLI installed and on PATH?")
+            print("  VPN switch failed: 'mullvad' not found — is Mullvad installed and on PATH?")
             return False
         except subprocess.TimeoutExpired:
             print(f"  VPN switch #{n}: timed out")
