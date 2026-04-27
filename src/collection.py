@@ -5,6 +5,7 @@ This module handles fetching data from the NBA API and saving it to disk.
 
 from __future__ import annotations
 
+import os
 import random
 import threading
 import time
@@ -165,10 +166,11 @@ class _SharedRateState:
             self._total_failures += 1
             if self._total_failures > self._total_successes:
                 self._aborted = True
-                raise _AbortError(
-                    f"Aborted: {self._total_failures} cumulative failures exceed "
-                    f"{self._total_successes} successes"
+                print(
+                    f"\nABORT: {self._total_failures} cumulative failures exceed "
+                    f"{self._total_successes} successes — stopping all workers"
                 )
+                os._exit(1)
             if time.time() < self._pause_until:
                 return self._pause_until - time.time(), False
             self.cons_failures += 1
