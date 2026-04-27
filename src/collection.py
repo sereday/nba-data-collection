@@ -18,7 +18,7 @@ import pandas as pd
 from nba_api.stats.endpoints import (
     BoxScoreHustleV2,
     BoxScoreMatchupsV3,
-    BoxScoreMiscV2,
+    BoxScoreMiscV3,
     BoxScorePlayerTrackV3,
     BoxScoreTraditionalV3,
     GameRotation,
@@ -76,7 +76,7 @@ GAME_LEVEL_DATA_TYPES: dict[str, tuple] = {
     "boxscore_quarters":    (BoxScoreTraditionalV3, 1996),
     "boxscore_matchups":    (BoxScoreMatchupsV3, 2013),
     "boxscore_playertrack": (BoxScorePlayerTrackV3, 2013),
-    "boxscore_misc":        (BoxScoreMiscV2, 2013),
+    "boxscore_misc":        (BoxScoreMiscV3, 2013),
     "boxscore_hustle":      (BoxScoreHustleV2, 2013),
     "game_rotation":        (GameRotation, 2005),
     "playbyplay":           (PlayByPlayV3, 2019),
