@@ -187,7 +187,7 @@ class _WorkerDelay:
     """Per-worker success-path delay, self-tuning toward fastest proven-safe pace."""
 
     def __init__(self):
-        self.last_pause = 0.5
+        self.last_pause = 0.78
         self._recent: deque = deque(maxlen=10)
 
     def next_pause(self) -> float:
@@ -196,7 +196,7 @@ class _WorkerDelay:
         base = self.last_pause / (1 + rand)
         if self._recent:
             base = max(base, rand2 * min(self._recent))
-        pause = max(base, 0.1 + random.uniform(0, 0.1)) + random.uniform(0.05, 0.15)
+        pause = max(base, 0.16 + random.uniform(0, 0.16)) + random.uniform(0.08, 0.24)
         self.last_pause = pause
         self._recent.append(pause)
         return pause
