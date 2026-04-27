@@ -82,6 +82,13 @@ GAME_LEVEL_DATA_TYPES: dict[str, tuple] = {
     "playbyplay":           (PlayByPlayV3, 2019),
 }
 
+# Game-level data types excluded from certain season types entirely.
+GAME_LEVEL_EXCLUDED_SEASON_TYPES: dict[str, set] = {
+    "boxscore_matchups":    {"Preseason"},
+    "boxscore_playertrack": {"Preseason"},
+    "boxscore_hustle":      {"Preseason"},
+}
+
 # Season-level data types only available from a certain year.
 # Types not listed here are attempted for all seasons.
 SEASON_DATA_TYPE_MIN_YEAR: dict[str, int] = {
@@ -650,7 +657,10 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
             dt_min_year = GAME_LEVEL_DATA_TYPES[data_type][1]
             if dt_min_year is not None and season_year < dt_min_year:
                 continue
+            excluded_types = GAME_LEVEL_EXCLUDED_SEASON_TYPES.get(data_type, set())
             for season_type in season_types:
+                if season_type in excluded_types:
+                    continue
                 st_min_year = SEASON_TYPE_MIN_YEAR.get(season_type)
                 if st_min_year is not None and season_year < st_min_year:
                     continue
