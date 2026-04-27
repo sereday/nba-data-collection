@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import random
+import subprocess
 import threading
 import time
 from collections import deque
@@ -109,18 +110,62 @@ class _AbortError(Exception):
     """Raised to stop a worker immediately — abort takes priority over all other handling."""
 
 
+class _VpnSwitcher:
+    """Disconnect/reconnect NordVPN via CLI. Assumes 'nordvpn' is on PATH."""
+
+    def __init__(self, max_switches: int = 5):
+        self._lock = threading.Lock()
+        self._count = 0
+        self.max_switches = max_switches
+
+    @property
+    def exhausted(self) -> bool:
+        return self._count >= self.max_switches
+
+    def switch(self) -> bool:
+        """Disconnect then reconnect NordVPN to get a fresh IP. Returns True on success."""
+        with self._lock:
+            if self._count >= self.max_switches:
+                print(f"  VPN: max switches ({self.max_switches}) exhausted")
+                return False
+            self._count += 1
+            n = self._count
+
+        print(f"  VPN switch #{n}/{self.max_switches}: disconnecting...")
+        try:
+            subprocess.run(["nordvpn", "-d"], timeout=15, capture_output=True, check=False)
+            time.sleep(2)
+            print(f"  VPN switch #{n}/{self.max_switches}: connecting to new server...")
+            subprocess.run(["nordvpn", "-c"], timeout=30, capture_output=True, check=False)
+            time.sleep(5)
+            print(f"  VPN switch #{n}/{self.max_switches}: connected")
+            return True
+        except FileNotFoundError:
+            print("  VPN switch failed: 'nordvpn' not found — is NordVPN installed and on PATH?")
+            return False
+        except subprocess.TimeoutExpired:
+            print(f"  VPN switch #{n}: timed out")
+            return False
+        except Exception as exc:
+            print(f"  VPN switch #{n}: {exc}")
+            return False
+
+
 class _SharedRateState:
     """Shared across all workers — owns failure counting and backoff timing.
 
     Failure path: exp(cons_failures**1.25 * (1+rand)) backoff, raised as
-                  RuntimeError after max_failures consecutive failures.
+                  _AbortError after max_failures consecutive failures.
     Pile-up guard: if a backoff is already in effect when a new failure arrives,
                    cons_failures is not incremented (same rate-limit event).
-    Global abort: if cumulative failures ever exceed cumulative successes,
-                  all workers are stopped immediately via _aborted flag.
+    VPN switch: at vpn_switch_threshold consecutive failures, disconnect/reconnect
+                NordVPN and reset all counters (fresh IP = fresh slate).
+    Global abort: if cumulative failures exceed successes and no VPN switcher is
+                  configured, all workers are stopped immediately via os._exit(1).
     """
 
-    def __init__(self, max_failures: int = 5):
+    def __init__(self, max_failures: int = 5, vpn_switch_threshold: int = 3,
+                 vpn_switcher: Optional[_VpnSwitcher] = None):
         self._lock = threading.Lock()
         self.cons_failures = 0
         self.max_failures = max_failures
@@ -128,6 +173,8 @@ class _SharedRateState:
         self._total_successes = 0
         self._total_failures = 0
         self._aborted = False
+        self._vpn_switch_threshold = vpn_switch_threshold
+        self._vpn_switcher = vpn_switcher
 
     def sleep(self, seconds: float) -> None:
         """Success-path sleep, interruptible if a backoff fires or abort triggers."""
@@ -161,10 +208,13 @@ class _SharedRateState:
 
     def report_failure(self) -> tuple[float, bool]:
         """Returns (pause, is_new) — is_new=False means already in backoff (pile-up).
-        Raises _AbortError if cumulative failures exceed successes or at max_failures."""
+        Raises _AbortError at max_failures or when VPN switches are exhausted.
+        At vpn_switch_threshold consecutive failures, triggers a VPN server switch."""
+        _try_vpn = False
+
         with self._lock:
             self._total_failures += 1
-            if self._total_failures > self._total_successes:
+            if self._total_failures > self._total_successes and self._vpn_switcher is None:
                 self._aborted = True
                 print(
                     f"\nABORT: {self._total_failures} cumulative failures exceed "
@@ -174,8 +224,31 @@ class _SharedRateState:
             if time.time() < self._pause_until:
                 return self._pause_until - time.time(), False
             self.cons_failures += 1
-            if self.cons_failures >= self.max_failures:
+            if self._vpn_switcher is not None and self.cons_failures >= self._vpn_switch_threshold:
+                _try_vpn = True
+            elif self.cons_failures >= self.max_failures:
                 raise _AbortError(f"{self.cons_failures} consecutive failures")
+            else:
+                rand = random.uniform(0, 1)
+                rand2 = 0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)
+                pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) - rand2
+                self._pause_until = time.time() + pause
+                return pause, True
+
+        # VPN switch outside the lock — takes several seconds
+        switched = self._vpn_switcher.switch()  # type: ignore[union-attr]
+        with self._lock:
+            if switched:
+                self._total_failures = 0
+                self._total_successes = 0
+                self.cons_failures = 0
+                self._pause_until = 0.0
+                return 0.0, True
+            # Switch failed — fall back to backoff or abort
+            if self.cons_failures >= self.max_failures or self._vpn_switcher.exhausted:
+                raise _AbortError(
+                    f"VPN switch failed after {self.cons_failures} consecutive failures"
+                )
             rand = random.uniform(0, 1)
             rand2 = 0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)
             pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) - rand2
@@ -558,7 +631,7 @@ def _run_season_game_level(
             print(f"    Error {data_type} {game_id}: {exc}")
             try:
                 pause, is_new = shared.report_failure()
-                if is_new:
+                if is_new and pause > 0:
                     print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
             except _AbortError as fatal:
                 print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
@@ -672,7 +745,14 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
 
     max_workers = int(job.get("max_workers", 4))
     max_failures = int(job.get("max_failures", 5))
-    shared = _SharedRateState(max_failures=max_failures)
+    vpn_switch_threshold = int(job.get("vpn_switch_threshold", 3))
+    max_vpn_switches = int(job.get("max_vpn_switches", 5))
+    vpn_switcher = _VpnSwitcher(max_switches=max_vpn_switches)
+    shared = _SharedRateState(
+        max_failures=max_failures,
+        vpn_switch_threshold=vpn_switch_threshold,
+        vpn_switcher=vpn_switcher,
+    )
     ping_log = _PingLog(output_dir.parent / "ping_log.csv")
     print(f"\nGame-level import: {len(season_tasks)} batches across {max_workers} workers\n")
 
