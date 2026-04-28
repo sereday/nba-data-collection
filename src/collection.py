@@ -5,11 +5,12 @@ This module handles fetching data from the NBA API and saving it to disk.
 
 from __future__ import annotations
 
-import os
 import random
 import subprocess
 import threading
 import time
+
+import requests
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -89,6 +90,7 @@ GAME_LEVEL_EXCLUDED_SEASON_TYPES: dict[str, set] = {
     "boxscore_matchups":    {"Preseason"},
     "boxscore_playertrack": {"Preseason"},
     "boxscore_hustle":      {"Preseason"},
+    "game_rotation":        {"Preseason"},
 }
 
 # Season-level data types only available from a certain year.
@@ -165,16 +167,18 @@ class _SharedRateState:
     """
 
     def __init__(self, max_failures: int = 5, vpn_switch_threshold: int = 3,
-                 vpn_switcher: Optional[_VpnSwitcher] = None):
+                 vpn_switcher: Optional[_VpnSwitcher] = None, base_pause: float = 1.0):
         self._lock = threading.Lock()
-        self.cons_failures = 0
+        self.cons_failures = 0.0
         self.max_failures = max_failures
         self._pause_until = 0.0
         self._total_successes = 0
         self._total_failures = 0
+        self._total_pause = 0.0
         self._aborted = False
         self._vpn_switch_threshold = vpn_switch_threshold
         self._vpn_switcher = vpn_switcher
+        self._base_pause = base_pause
 
     def sleep(self, seconds: float) -> None:
         """Success-path sleep, interruptible if a backoff fires or abort triggers."""
@@ -200,11 +204,26 @@ class _SharedRateState:
                 raise _AbortError("Aborted: cumulative failures exceed successes")
             time.sleep(0.25)
 
-    def report_success(self) -> None:
+    def report_success(self, pause: float = 0.0, reset_failures: bool = True) -> None:
         with self._lock:
             self._total_successes += 1
-            if time.time() >= self._pause_until:
-                self.cons_failures = 0
+            self._total_pause += pause
+            if reset_failures and time.time() >= self._pause_until:
+                self.cons_failures = 0.0
+
+    def report_slow_fetch(self) -> None:
+        with self._lock:
+            if time.time() < self._pause_until:
+                return
+            self.cons_failures += 0.5
+            rand = random.uniform(0, 1)
+            rand2 = (0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)) * self._base_pause
+            pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) * self._base_pause + rand2
+            self._pause_until = time.time() + pause
+
+    @property
+    def avg_pause(self) -> float:
+        return self._total_pause / self._total_successes if self._total_successes else 0.0
 
     def report_failure(self) -> tuple[float, bool]:
         """Returns (pause, is_new) — is_new=False means already in backoff (pile-up).
@@ -220,7 +239,9 @@ class _SharedRateState:
                     f"\nABORT: {self._total_failures} cumulative failures exceed "
                     f"{self._total_successes} successes — stopping all workers"
                 )
-                os._exit(1)
+                raise _AbortError(
+                    f"{self._total_failures} cumulative failures exceed {self._total_successes} successes"
+                )
             if time.time() < self._pause_until:
                 return self._pause_until - time.time(), False
             self.cons_failures += 1
@@ -230,8 +251,8 @@ class _SharedRateState:
                 raise _AbortError(f"{self.cons_failures} consecutive failures")
             else:
                 rand = random.uniform(0, 1)
-                rand2 = 0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)
-                pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) - rand2
+                rand2 = (0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)) * self._base_pause
+                pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) * self._base_pause + rand2
                 self._pause_until = time.time() + pause
                 return pause, True
 
@@ -251,7 +272,7 @@ class _SharedRateState:
                 )
             rand = random.uniform(0, 1)
             rand2 = 0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)
-            pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) - rand2
+            pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) + rand2
             self._pause_until = time.time() + pause
             return pause, True
 
@@ -259,9 +280,15 @@ class _SharedRateState:
 class _WorkerDelay:
     """Per-worker success-path delay, self-tuning toward fastest proven-safe pace."""
 
-    def __init__(self):
+    def __init__(self, base_pause: float = 1.0):
         self.last_pause = 1.36
         self._recent: deque = deque(maxlen=10)
+        self._base_pause = base_pause
+
+    def current_timeout(self, min_timeout: float) -> float:
+        if not self._recent:
+            return 120.0
+        return max(min_timeout, min(120.0, self.last_pause))
 
     def next_pause(self) -> float:
         rand = random.uniform(0, 1)
@@ -269,10 +296,11 @@ class _WorkerDelay:
         base = self.last_pause / (1 + rand)
         if self._recent:
             base = max(base, rand2 * min(self._recent))
-        pause = max(base, 0.28 + random.uniform(0, 0.28)) + random.uniform(0.14, 0.42)
+        pause = max(base, 0.1 + rand2 / 10)
         self.last_pause = pause
         self._recent.append(pause)
-        return pause
+        return max(pause * self._base_pause, self._base_pause)
+
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +511,7 @@ def get_game_ids_for_season(data_dir: Path, season: str, season_type: str, outpu
     return sorted(df["GAME_ID"].astype(str).str.zfill(10).unique().tolist())
 
 
-def fetch_boxscore_quarters(game_id: str) -> Optional[pd.DataFrame]:
+def fetch_boxscore_quarters(game_id: str, timeout: int = 15) -> Optional[pd.DataFrame]:
     """Fetch per-quarter player stats for a game, including OT periods.
 
     range_type='1' activates period filtering; without it the API ignores
@@ -499,6 +527,7 @@ def fetch_boxscore_quarters(game_id: str) -> Optional[pd.DataFrame]:
                 range_type="1",
                 start_period=str(period),
                 end_period=str(period),
+                timeout=timeout,
             )
             df = result.get_data_frames()[0]
             if df.empty:
@@ -516,14 +545,14 @@ def fetch_boxscore_quarters(game_id: str) -> Optional[pd.DataFrame]:
     return pd.concat(periods, ignore_index=True)
 
 
-def fetch_game_level_data(game_id: str, data_type: str) -> Optional[pd.DataFrame]:
+def fetch_game_level_data(game_id: str, data_type: str, timeout: int = 15) -> Optional[pd.DataFrame]:
     """Fetch a single game's data for the given data type."""
     if data_type == "boxscore_quarters":
-        return fetch_boxscore_quarters(game_id)
+        return fetch_boxscore_quarters(game_id, timeout=timeout)
 
     endpoint_class, _ = GAME_LEVEL_DATA_TYPES[data_type]
     try:
-        result = endpoint_class(game_id=game_id)
+        result = endpoint_class(game_id=game_id, timeout=timeout)
         if data_type == "game_rotation":
             tables = [df for df in result.get_data_frames() if not df.empty]
             return pd.concat(tables, ignore_index=True) if tables else None
@@ -591,9 +620,12 @@ def _run_season_game_level(
     overwrite: bool,
     shared: _SharedRateState,
     ping_log: _PingLog,
+    base_pause: float = 1.0,
+    min_timeout: float = 3.0,
+    slow_fetch_threshold: float = 5.0,
 ) -> None:
     """Worker: fetch one data_type for all games in one (season, season_type) batch."""
-    local = _WorkerDelay()
+    local = _WorkerDelay(base_pause=base_pause)
 
     game_ids = get_game_ids_for_season(output_dir, season, season_type, output_format)
     if not game_ids:
@@ -610,9 +642,11 @@ def _run_season_game_level(
 
         t0 = 0.0
         try:
+            t_pre = time.time()
             shared.check_pause()
+            pre_wait = time.time() - t_pre
             t0 = time.time()
-            df = fetch_game_level_data(game_id, data_type)
+            df = fetch_game_level_data(game_id, data_type, timeout=local.current_timeout(min_timeout))
             duration = time.time() - t0
             if df is not None and len(df) > 0:
                 game_dir.mkdir(parents=True, exist_ok=True)
@@ -621,23 +655,27 @@ def _run_season_game_level(
                 else:
                     df.to_parquet(filepath, index=False)
             ping_log.record(season, season_type, data_type, duration, True)
-            shared.report_success()
-            shared.sleep(local.next_pause())
+            pause = local.next_pause()
+            is_slow = duration > slow_fetch_threshold
+            if is_slow:
+                shared.report_slow_fetch()
+            backoff_remaining = max(0.0, shared._pause_until - time.time())
+            effective_wait = max(pause, backoff_remaining) + pre_wait
+            shared.report_success(effective_wait, reset_failures=not is_slow)
+            slow_tag = " [slow]" if is_slow else ""
+            print(f"  {game_id} fetch={duration:.2f}s wait={effective_wait:.2f}s cons={shared.cons_failures:.1f}{slow_tag} | ok={shared._total_successes} fail={shared._total_failures} avg_pause={shared.avg_pause:.2f}s")
+            shared.sleep(pause)
         except _AbortError as fatal:
             print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
             return
         except Exception as exc:
             ping_log.record(season, season_type, data_type, time.time() - t0, False)
-            print(f"    Error {data_type} {game_id}: {exc}")
+            label = "Timeout" if isinstance(exc, requests.exceptions.Timeout) else "Error"
+            print(f"    {label} {data_type} {game_id}: {exc}")
             try:
                 pause, is_new = shared.report_failure()
                 if is_new and pause > 0:
                     print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
-            except _AbortError as fatal:
-                print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
-                return
-            try:
-                shared.check_pause()
             except _AbortError as fatal:
                 print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
                 return
@@ -745,13 +783,18 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
 
     max_workers = int(job.get("max_workers", 4))
     max_failures = int(job.get("max_failures", 5))
+    base_pause = float(job.get("base_pause", 1.0))
+    min_timeout = float(job.get("min_timeout", 3.0))
+    slow_fetch_threshold = float(job.get("slow_fetch_threshold", 5.0))
     vpn_switch_threshold = int(job.get("vpn_switch_threshold", 3))
     max_vpn_switches = int(job.get("max_vpn_switches", 5))
-    vpn_switcher = _VpnSwitcher(max_switches=max_vpn_switches)
+    use_vpn = bool(job.get("use_vpn", False))
+    vpn_switcher = _VpnSwitcher(max_switches=max_vpn_switches) if use_vpn else None
     shared = _SharedRateState(
         max_failures=max_failures,
         vpn_switch_threshold=vpn_switch_threshold,
         vpn_switcher=vpn_switcher,
+        base_pause=base_pause,
     )
     ping_log = _PingLog(output_dir.parent / "ping_log.csv")
     print(f"\nGame-level import: {len(season_tasks)} batches across {max_workers} workers\n")
@@ -761,7 +804,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
             executor.submit(
                 _run_season_game_level,
                 season, season_type, data_type,
-                output_dir, output_format, overwrite, shared, ping_log,
+                output_dir, output_format, overwrite, shared, ping_log, base_pause, min_timeout, slow_fetch_threshold,
             ): (season, season_type, data_type)
             for season, season_type, data_type in season_tasks
         }
@@ -771,9 +814,15 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
                 future.result()
             except Exception as exc:
                 print(f"  Worker failed for {s} {st} [{dt}]: {exc}")
+            if shared._aborted:
+                for f in futures:
+                    f.cancel()
+                break
 
     ping_log.flush()
     print(f"Ping log saved to {ping_log._path}")
+    if shared._aborted:
+        raise RuntimeError("Import stage aborted due to too many failures — pipeline stopped")
 
 
 def run_job(job: Dict[str, Any]) -> None:

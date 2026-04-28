@@ -7,13 +7,12 @@
     "All-Star, PlayIn, IST"
   ],
   "data_types": [
+    "playbyplay", "game_rotation", "boxscore_quarters", "boxscore_hustle", "boxscore_misc",
     "players", "teams", "rosters",
     "player_season_stats", "team_season_stats",
-    "game_rotation", "playbyplay",
-    "boxscore_misc", "boxscore_hustle",
-    "boxscore_quarters",
     "boxscore_matchups", "boxscore_playertrack"
   ],
+  "skipped":[],
   "data_types_note": [
     "Season-level: players, teams, rosters,",
     "  player_season_stats, team_season_stats",
@@ -24,6 +23,10 @@
   "output_dir": "./data",
   "max_workers": 1,
   "max_failures": 5,
+  "base_pause": 5.346,
+  "min_timeout": 30.0,
+  "slow_fetch_threshold": 5.0,
+  "use_vpn": false,
   "stages": ["import", "patch", "import_validate", "clean", "impute", "features", "gpm"],
   "skip_stages": [],
   "overwrite": false

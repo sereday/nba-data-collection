@@ -54,6 +54,11 @@ def generate_seasons(start_season: str, end_season: str) -> list[str]:
     return [f"{year}-{str(year + 1)[-2:]}" for year in range(start_year, end_year + 1)]
 
 
+def get_target_stat(job: Dict[str, Any]) -> str:
+    """Get the target stat column for the design matrix (e.g. tm_PTS, opp_PTS)."""
+    return str(job.get("target_stat", "tm_PTS"))
+
+
 def build_season_plan(job: Dict[str, Any]) -> list[str]:
     """Build the list of seasons to process from job config, most recent first."""
     if "season_start" in job and "season_end" in job:

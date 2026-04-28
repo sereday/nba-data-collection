@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-from config import get_output_directory, get_output_format
+from config import get_output_directory, get_output_format, get_target_stat
 
 
 def _parse_min(val):
@@ -23,13 +23,17 @@ def run_features_stage(job):
     out_dir = get_output_directory(job)
     min_threshold = job.get("min_threshold", 24.0)
     threshold_type = job.get("threshold_type", "minutes")
+    target_stat = get_target_stat(job)
 
     imputed = os.path.join(out_dir, "imputed_player_data.csv")
     cleaned = os.path.join(out_dir, "cleaned_player_data.csv")
     src = imputed if os.path.exists(imputed) else cleaned
 
-    df = pd.read_csv(src)
-    df["MIN_float"] = df["MIN"].apply(_parse_min)
+    needed = {"GAME_ID", "PLAYER_ID", "TEAM_ID", "MATCHUP", "GAME_DATE",
+              "season", "season_type", "MIN", "MIN_filled", target_stat}
+    df = pd.read_csv(src, usecols=lambda c: c in needed)
+    min_col = "MIN_filled" if "MIN_filled" in df.columns else "MIN"
+    df["MIN_float"] = df[min_col].apply(_parse_min)
 
     if threshold_type == "pct":
         df["qualified"] = df["MIN_float"] / 48.0 >= min_threshold
@@ -46,8 +50,8 @@ def run_features_stage(job):
         home_all = gdf[gdf["is_home"]]
         road_all = gdf[~gdf["is_home"]]
 
-        home_pts_series = home_all["tm_PTS"].dropna()
-        road_pts_series = road_all["tm_PTS"].dropna()
+        home_pts_series = home_all[target_stat].dropna()
+        road_pts_series = road_all[target_stat].dropna()
 
         game_meta[game_id] = {
             "home_players": set(home_rows["PLAYER_ID"].tolist()),

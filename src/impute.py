@@ -152,10 +152,9 @@ def _apply_imputed(cleaned_df, imp_df, group_keys, present_stats):
         imp_col = f"{s}_imp"
         if imp_col not in df.columns:
             continue
-        if s not in df.columns:
-            df[s] = df[imp_col]
-        else:
-            df[s] = np.where(df[s].notna(), df[s], df[imp_col])
+        raw = df[s] if s in df.columns else pd.Series(np.nan, index=df.index)
+        # null imp_col means player had no season stats match — leave filled null so errors are visible
+        df[f"{s}_filled"] = np.where(raw.notna(), raw, df[imp_col])
     drop_cols = [f"{s}_imp" for s in present_stats if f"{s}_imp" in df.columns]
     df = df.drop(columns=drop_cols)
     return df
