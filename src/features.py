@@ -1,6 +1,12 @@
+import json
 import os
+
+import numpy as np
 import pandas as pd
+
 from config import get_output_directory, get_output_format, get_target_stat
+
+STOP_AFTER_OPTIONS = ["load", "pivots", "join", "matrix"]
 
 
 def _parse_min(val):
@@ -19,108 +25,178 @@ def _parse_min(val):
         return 0.0
 
 
+def _build_pivot(df, is_home: int, prefix: str, min_threshold: float, threshold_type: str, target_col: str = None):
+    min_col = "MIN_filled" if "MIN_filled" in df.columns else "MIN"
+    side = df[df["is_home"] == is_home].copy()
+    side["MIN_float"] = side[min_col].apply(_parse_min)
+
+    if threshold_type == "pct":
+        qualified = side[side["MIN_float"] / 48.0 >= min_threshold]
+    else:
+        qualified = side[side["MIN_float"] >= min_threshold]
+
+    qualified = qualified[["GAME_ID", "PLAYER_ID"]].drop_duplicates()
+
+    all_games   = sorted(qualified["GAME_ID"].unique())
+    all_players = sorted(qualified["PLAYER_ID"].unique())
+    game_idx    = {g: i for i, g in enumerate(all_games)}
+    player_idx  = {p: i for i, p in enumerate(all_players)}
+
+    data = np.zeros((len(all_games), len(all_players)), dtype=np.int8)
+    row_idx = qualified["GAME_ID"].map(game_idx).values
+    col_idx = qualified["PLAYER_ID"].map(player_idx).values
+    data[row_idx, col_idx] = 1
+
+    pivot = pd.DataFrame(data, index=all_games, columns=[f"{prefix}_{p}" for p in all_players])
+    pivot.index.name = "GAME_ID"
+    if target_col is not None:
+        pts = side.groupby("GAME_ID")[target_col].first().rename(target_col)
+        pivot = pd.concat([pivot, pts], axis=1)
+    return pivot
+
+
+def _flatten(d: dict, prefix: str = "") -> dict:
+    out = {}
+    for k, v in d.items():
+        key = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            out.update(_flatten(v, key))
+        else:
+            out[key] = v
+    return out
+
+
+def _save_debug(info: dict, debug_dir: str, filename: str) -> None:
+    os.makedirs(debug_dir, exist_ok=True)
+
+    json_path = os.path.join(debug_dir, filename)
+    with open(json_path, "w") as f:
+        json.dump(info, f, indent=2)
+
+    csv_path = json_path.replace(".json", ".csv")
+    flat = _flatten(info)
+    pd.DataFrame(flat.items(), columns=["key", "value"]).to_csv(csv_path, index=False)
+
+    print(f"  [debug] saved {csv_path}")
+
+
 def run_features_stage(job):
     out_dir = get_output_directory(job)
-    min_threshold = job.get("min_threshold", 24.0)
+    min_threshold  = float(job.get("min_threshold", 24.0))
     threshold_type = job.get("threshold_type", "minutes")
-    target_stat = get_target_stat(job)
+    target_stat    = get_target_stat(job)
+    debug          = bool(job.get("debug_features", False))
+    stop_after     = job.get("debug_stop_after", "matrix")
+    debug_dir      = os.path.join(str(out_dir), "..", "debug")
 
+    if stop_after not in STOP_AFTER_OPTIONS:
+        raise ValueError(f"debug_stop_after must be one of {STOP_AFTER_OPTIONS}")
+
+    # --- load ---
     imputed = os.path.join(out_dir, "imputed_player_data.csv")
     cleaned = os.path.join(out_dir, "cleaned_player_data.csv")
     src = imputed if os.path.exists(imputed) else cleaned
 
-    needed = {"GAME_ID", "PLAYER_ID", "TEAM_ID", "MATCHUP", "GAME_DATE",
+    needed = {"GAME_ID", "PLAYER_ID", "TEAM_ID", "GAME_DATE", "is_home", "MATCHUP",
               "season", "season_type", "MIN", "MIN_filled", target_stat}
     df = pd.read_csv(src, usecols=lambda c: c in needed)
-    min_col = "MIN_filled" if "MIN_filled" in df.columns else "MIN"
-    df["MIN_float"] = df[min_col].apply(_parse_min)
 
-    if threshold_type == "pct":
-        df["qualified"] = df["MIN_float"] / 48.0 >= min_threshold
-    else:
-        df["qualified"] = df["MIN_float"] >= min_threshold
+    if "is_home" not in df.columns:
+        if "MATCHUP" not in df.columns:
+            raise ValueError("cleaned data has neither 'is_home' nor 'MATCHUP' — re-run the clean stage")
+        print("  'is_home' missing — deriving from MATCHUP (re-run clean stage to fix permanently)")
+        df["is_home"] = (~df["MATCHUP"].str.contains("@", regex=False)).astype("int8")
+    df = df.drop(columns=["MATCHUP"], errors="ignore")
 
-    df["is_home"] = df["MATCHUP"].str.contains(r"\bvs\.", regex=True)
+    if debug:
+        _save_debug({
+            "step": "load",
+            "source": src,
+            "shape": list(df.shape),
+            "columns": df.columns.tolist(),
+            "missing_needed": list(needed - set(df.columns)),
+            "games": int(df["GAME_ID"].nunique()),
+            "players": int(df["PLAYER_ID"].nunique()),
+            "is_home_counts": df["is_home"].value_counts().to_dict() if "is_home" in df.columns else "missing",
+        }, debug_dir, "features_01_load.json")
 
-    game_meta = {}
-    for game_id, gdf in df.groupby("GAME_ID"):
-        home_rows = gdf[gdf["is_home"] & gdf["qualified"]]
-        road_rows = gdf[~gdf["is_home"] & gdf["qualified"]]
+    if stop_after == "load":
+        print("Stopped after: load")
+        return
 
-        home_all = gdf[gdf["is_home"]]
-        road_all = gdf[~gdf["is_home"]]
+    # --- pivots ---
+    # Home row:  O_ = home qualified players,  D_ = road qualified players,  target = home pts
+    # Road row:  O_ = road qualified players,  D_ = home qualified players,  target = road pts
+    home_off = _build_pivot(df, is_home=1, prefix="O", target_col="tm_PTS", min_threshold=min_threshold, threshold_type=threshold_type)
+    road_off = _build_pivot(df, is_home=0, prefix="O", target_col="tm_PTS", min_threshold=min_threshold, threshold_type=threshold_type)
+    home_def = _build_pivot(df, is_home=0, prefix="D", min_threshold=min_threshold, threshold_type=threshold_type)
+    road_def = _build_pivot(df, is_home=1, prefix="D", min_threshold=min_threshold, threshold_type=threshold_type)
 
-        home_pts_series = home_all[target_stat].dropna()
-        road_pts_series = road_all[target_stat].dropna()
+    if debug:
+        _save_debug({
+            "step": "pivots",
+            "home_off": {"shape": list(home_off.shape), "games": len(home_off), "players": sum(c.startswith("O_") for c in home_off.columns)},
+            "road_off": {"shape": list(road_off.shape), "games": len(road_off), "players": sum(c.startswith("O_") for c in road_off.columns)},
+            "home_def": {"shape": list(home_def.shape), "games": len(home_def), "players": sum(c.startswith("D_") for c in home_def.columns)},
+            "road_def": {"shape": list(road_def.shape), "games": len(road_def), "players": sum(c.startswith("D_") for c in road_def.columns)},
+            "note": "home_def uses road players (is_home=0); road_def uses home players (is_home=1)",
+        }, debug_dir, "features_02_pivots.json")
 
-        game_meta[game_id] = {
-            "home_players": set(home_rows["PLAYER_ID"].tolist()),
-            "road_players": set(road_rows["PLAYER_ID"].tolist()),
-            "home_team_id": home_all["TEAM_ID"].iloc[0] if len(home_all) else None,
-            "road_team_id": road_all["TEAM_ID"].iloc[0] if len(road_all) else None,
-            "home_pts": home_pts_series.iloc[0] if len(home_pts_series) else None,
-            "road_pts": road_pts_series.iloc[0] if len(road_pts_series) else None,
-            "game_date": gdf["GAME_DATE"].iloc[0],
-            "season": gdf["season"].iloc[0],
-            "season_type": gdf["season_type"].iloc[0],
-        }
+    if stop_after == "pivots":
+        print("Stopped after: pivots")
+        return
 
-    all_player_ids = sorted(
-        set(pid for m in game_meta.values() for pid in m["home_players"] | m["road_players"])
-    )
-    o_cols = [f"O_{pid}" for pid in all_player_ids]
-    d_cols = [f"D_{pid}" for pid in all_player_ids]
-    id_cols = ["GAME_ID", "team_id", "opp_id", "home", "team_pts", "GAME_DATE", "season", "season_type"]
+    # --- join ---
+    d_only = lambda p: [c for c in p.columns if c.startswith("D_")]
 
-    rows_a = []
-    rows_b = []
+    home_rows = pd.concat([home_off, home_def], axis=1).rename(columns={"tm_PTS": "team_pts"})
+    home_rows["home"] = 1
+    road_rows = pd.concat([road_off, road_def], axis=1).rename(columns={"tm_PTS": "team_pts"})
+    road_rows["home"] = 0
 
-    for game_id, m in game_meta.items():
-        base = {
-            "GAME_ID": game_id,
-            "GAME_DATE": m["game_date"],
-            "season": m["season"],
-            "season_type": m["season_type"],
-        }
+    if debug:
+        _save_debug({
+            "step": "join",
+            "home_rows": {
+                "shape": list(home_rows.shape),
+                "null_team_pts": int(home_rows["team_pts"].isna().sum()),
+                "o_cols": sum(c.startswith("O_") for c in home_rows.columns),
+                "d_cols": sum(c.startswith("D_") for c in home_rows.columns),
+            },
+            "road_rows": {
+                "shape": list(road_rows.shape),
+                "null_team_pts": int(road_rows["team_pts"].isna().sum()),
+                "o_cols": sum(c.startswith("O_") for c in road_rows.columns),
+                "d_cols": sum(c.startswith("D_") for c in road_rows.columns),
+            },
+        }, debug_dir, "features_03_join.json")
 
-        row_a = {
-            **base,
-            "team_id": m["home_team_id"],
-            "opp_id": m["road_team_id"],
-            "home": 1,
-            "team_pts": m["home_pts"],
-        }
-        for pid in all_player_ids:
-            row_a[f"O_{pid}"] = 1 if pid in m["home_players"] else 0
-            row_a[f"D_{pid}"] = 1 if pid in m["road_players"] else 0
-        rows_a.append(row_a)
+    if stop_after == "join":
+        print("Stopped after: join")
+        return
 
-        row_b = {
-            **base,
-            "team_id": m["road_team_id"],
-            "opp_id": m["home_team_id"],
-            "home": 0,
-            "team_pts": m["road_pts"],
-        }
-        for pid in all_player_ids:
-            row_b[f"O_{pid}"] = 1 if pid in m["road_players"] else 0
-            row_b[f"D_{pid}"] = 1 if pid in m["home_players"] else 0
-        rows_b.append(row_b)
+    # --- matrix ---
+    matrix = pd.concat([home_rows, road_rows]).reset_index()
 
-    col_order = id_cols + o_cols + d_cols
-    matrix = pd.concat(
-        [pd.DataFrame(rows_a), pd.DataFrame(rows_b)],
-        ignore_index=True,
-    )[col_order]
-
-    for c in o_cols + d_cols:
-        if c not in matrix.columns:
-            matrix[c] = 0
-    matrix[o_cols + d_cols] = matrix[o_cols + d_cols].fillna(0).astype("int8")
+    if debug:
+        o_cols = [c for c in matrix.columns if c.startswith("O_")]
+        d_cols = [c for c in matrix.columns if c.startswith("D_")]
+        _save_debug({
+            "step": "matrix",
+            "shape": list(matrix.shape),
+            "rows": len(matrix),
+            "o_cols": len(o_cols),
+            "d_cols": len(d_cols),
+            "null_team_pts": int(matrix["team_pts"].isna().sum()),
+            "home_row_count": int((matrix["is_home"] == 1).sum()),
+            "road_row_count": int((matrix["is_home"] == 0).sum()),
+            "players_only_home": len(set(o_cols) - set(d_cols)),
+            "players_only_road": len(set(d_cols) - set(o_cols)),
+        }, debug_dir, "features_04_matrix.json")
 
     out_path = os.path.join(out_dir, "design_matrix.parquet")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     matrix.to_parquet(out_path, index=False)
 
     print(f"Design matrix shape: {matrix.shape}")
-    print(f"Unique players: {len(all_player_ids)}")
+    print(f"O cols: {sum(c.startswith('O_') for c in matrix.columns)}  D cols: {sum(c.startswith('D_') for c in matrix.columns)}")

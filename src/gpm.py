@@ -5,14 +5,16 @@ from config import get_output_directory, get_output_format
 
 def run_gpm_stage(job):
     output_dir = get_output_directory(job)
-    design_matrix_path = os.path.join(output_dir, "design_matrix.parquet")
-
-    if not os.path.exists(design_matrix_path):
-        print(f"Design matrix not found at {design_matrix_path}. Run features stage first.")
+    for ext, reader in [("parquet", pd.read_parquet), ("csv", pd.read_csv)]:
+        design_matrix_path = os.path.join(output_dir, f"design_matrix.{ext}")
+        if os.path.exists(design_matrix_path):
+            break
+    else:
+        print(f"Design matrix not found in {output_dir}. Run features stage first.")
         return
 
-    print("Loading design matrix...")
-    df = pd.read_parquet(design_matrix_path)
+    print(f"Loading design matrix from {design_matrix_path}...")
+    df = reader(design_matrix_path)
 
     try:
         import h2o

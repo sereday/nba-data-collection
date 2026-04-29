@@ -113,33 +113,48 @@ class _AbortError(Exception):
 
 
 class _VpnSwitcher:
-    """Disconnect/reconnect Mullvad via CLI. Assumes 'mullvad' is on PATH."""
+    """Activate/deactivate Mullvad via CLI. Assumes 'mullvad' is on PATH.
+
+    Starts assuming own IP (VPN inactive). On switch(): connects to VPN (or changes
+    server if already active). On disconnect(): drops back to own IP.
+    max_switches counts VPN activations only, not switch-backs.
+    """
 
     def __init__(self, max_switches: int = 5):
         self._lock = threading.Lock()
         self._count = 0
         self.max_switches = max_switches
+        self._active = False  # assume starting on own IP
+
+    @property
+    def active(self) -> bool:
+        return self._active
 
     @property
     def exhausted(self) -> bool:
         return self._count >= self.max_switches
 
     def switch(self) -> bool:
-        """Disconnect then reconnect Mullvad to a random server for a fresh IP. Returns True on success."""
+        """Activate VPN (or switch to a new server if already active). Returns True on success."""
         with self._lock:
             if self._count >= self.max_switches:
                 print(f"  VPN: max switches ({self.max_switches}) exhausted")
                 return False
             self._count += 1
             n = self._count
+            already_active = self._active
 
-        print(f"  VPN switch #{n}/{self.max_switches}: disconnecting...")
         try:
-            subprocess.run(["mullvad", "disconnect"], timeout=15, capture_output=True, check=False)
-            time.sleep(2)
-            print(f"  VPN switch #{n}/{self.max_switches}: connecting to new server...")
+            if already_active:
+                print(f"  VPN switch #{n}/{self.max_switches}: switching to new server...")
+                subprocess.run(["mullvad", "disconnect"], timeout=15, capture_output=True, check=False)
+                time.sleep(2)
+            else:
+                print(f"  VPN switch #{n}/{self.max_switches}: activating VPN...")
             subprocess.run(["mullvad", "connect"], timeout=30, capture_output=True, check=False)
             time.sleep(5)
+            with self._lock:
+                self._active = True
             print(f"  VPN switch #{n}/{self.max_switches}: connected")
             return True
         except FileNotFoundError:
@@ -151,6 +166,16 @@ class _VpnSwitcher:
         except Exception as exc:
             print(f"  VPN switch #{n}: {exc}")
             return False
+
+    def disconnect(self) -> None:
+        """Drop back to own IP."""
+        try:
+            subprocess.run(["mullvad", "disconnect"], timeout=15, capture_output=True, check=False)
+            with self._lock:
+                self._active = False
+            print("  VPN: switched back to own IP")
+        except Exception as exc:
+            print(f"  VPN disconnect failed: {exc}")
 
 
 class _SharedRateState:
@@ -167,7 +192,8 @@ class _SharedRateState:
     """
 
     def __init__(self, max_failures: int = 5, vpn_switch_threshold: int = 3,
-                 vpn_switcher: Optional[_VpnSwitcher] = None, base_pause: float = 1.0):
+                 vpn_switcher: Optional[_VpnSwitcher] = None, base_pause: float = 1.0,
+                 vpn_cooldown: int = 0):
         self._lock = threading.Lock()
         self.cons_failures = 0.0
         self.max_failures = max_failures
@@ -179,6 +205,9 @@ class _SharedRateState:
         self._vpn_switch_threshold = vpn_switch_threshold
         self._vpn_switcher = vpn_switcher
         self._base_pause = base_pause
+        self._vpn_cooldown = vpn_cooldown  # successes on VPN before dropping back to own IP (0 = never)
+        self._vpn_successes = 0
+        self._home_successes = 0
 
     def sleep(self, seconds: float) -> None:
         """Success-path sleep, interruptible if a backoff fires or abort triggers."""
@@ -205,11 +234,32 @@ class _SharedRateState:
             time.sleep(0.25)
 
     def report_success(self, pause: float = 0.0, reset_failures: bool = True) -> None:
+        do_disconnect = False
         with self._lock:
             self._total_successes += 1
             self._total_pause += pause
             if reset_failures and time.time() >= self._pause_until:
                 self.cons_failures = 0.0
+            if self._vpn_switcher is not None and self._vpn_switcher.active:
+                self._vpn_successes += 1
+                if self._vpn_cooldown > 0 and self._vpn_successes >= self._vpn_cooldown:
+                    self._vpn_successes = 0
+                    self._home_successes = 0
+                    self.cons_failures = 0.0
+                    self._pause_until = 0.0
+                    do_disconnect = True
+            elif self._vpn_switcher is not None:
+                self._home_successes += 1
+        if do_disconnect:
+            self._vpn_switcher.disconnect()  # type: ignore[union-attr]
+
+    @property
+    def vpn_status(self) -> str:
+        if self._vpn_switcher is None:
+            return ""
+        if self._vpn_switcher.active:
+            return f"vpn:{self._vpn_successes}/{self._vpn_cooldown}"
+        return f"own:{self._home_successes}"
 
     def report_slow_fetch(self) -> None:
         with self._lock:
@@ -264,6 +314,8 @@ class _SharedRateState:
                 self._total_successes = 0
                 self.cons_failures = 0
                 self._pause_until = 0.0
+                self._vpn_successes = 0
+                self._home_successes = 0
                 return 0.0, True
             # Switch failed — fall back to backoff or abort
             if self.cons_failures >= self.max_failures or self._vpn_switcher.exhausted:
@@ -282,7 +334,7 @@ class _WorkerDelay:
 
     def __init__(self, base_pause: float = 1.0):
         self.last_pause = 1.36
-        self._recent: deque = deque(maxlen=10)
+        self._recent: deque = deque(maxlen=3)
         self._base_pause = base_pause
 
     def current_timeout(self, min_timeout: float) -> float:
@@ -299,7 +351,7 @@ class _WorkerDelay:
         pause = max(base, 0.1 + rand2 / 10)
         self.last_pause = pause
         self._recent.append(pause)
-        return max(pause * self._base_pause, self._base_pause)
+        return pause * self._base_pause
 
 
 
@@ -535,7 +587,6 @@ def fetch_boxscore_quarters(game_id: str, timeout: int = 15) -> Optional[pd.Data
             df = df.copy()
             df["period"] = period
             periods.append(df)
-            time.sleep(0.3)
         except Exception:
             if not periods:
                 raise  # Period 1 failed — propagate so worker triggers backoff
@@ -640,45 +691,111 @@ def _run_season_game_level(
         if _valid_file(filepath) and not overwrite:
             continue
 
-        t0 = 0.0
-        try:
-            t_pre = time.time()
-            shared.check_pause()
-            pre_wait = time.time() - t_pre
-            t0 = time.time()
-            df = fetch_game_level_data(game_id, data_type, timeout=local.current_timeout(min_timeout))
-            duration = time.time() - t0
-            if df is not None and len(df) > 0:
+        if data_type == "boxscore_quarters":
+            # Each period is one request — full rate-limit cycle per period, save once per game.
+            periods: list[pd.DataFrame] = []
+            aborted = False
+            for period in range(1, 15):
+                t0 = 0.0
+                try:
+                    t_pre = time.time()
+                    shared.check_pause()
+                    pre_wait = time.time() - t_pre
+                    t0 = time.time()
+                    result = BoxScoreTraditionalV3(
+                        game_id=game_id,
+                        range_type="1",
+                        start_period=str(period),
+                        end_period=str(period),
+                        timeout=local.current_timeout(min_timeout),
+                    )
+                    df = result.get_data_frames()[0]
+                    duration = time.time() - t0
+                    if df.empty:
+                        break
+                    df = df.copy()
+                    df["period"] = period
+                    periods.append(df)
+                    ping_log.record(season, season_type, data_type, duration, True)
+                    pause = local.next_pause()
+                    is_slow = duration > slow_fetch_threshold
+                    if is_slow:
+                        shared.report_slow_fetch()
+                    backoff_remaining = max(0.0, shared._pause_until - time.time())
+                    effective_wait = max(pause, backoff_remaining) + pre_wait
+                    shared.report_success(effective_wait, reset_failures=not is_slow)
+                    slow_tag = " [slow]" if is_slow else ""
+                    vpn_tag = f" | {shared.vpn_status}" if shared.vpn_status else ""
+                    print(f"  {game_id} p{period} fetch={duration:.2f}s wait={effective_wait:.2f}s cons={shared.cons_failures:.1f}{slow_tag} | ok={shared._total_successes} fail={shared._total_failures} avg_pause={shared.avg_pause:.2f}s{vpn_tag}")
+                    shared.sleep(pause)
+                except _AbortError as fatal:
+                    print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
+                    aborted = True
+                    break
+                except Exception as exc:
+                    if not periods:
+                        # Period 1 failure — real failure, trigger backoff
+                        ping_log.record(season, season_type, data_type, time.time() - t0, False)
+                        err_label = "Timeout" if isinstance(exc, requests.exceptions.Timeout) else "Error"
+                        print(f"    {err_label} {data_type} {game_id} p{period}: {exc}")
+                        try:
+                            pause, is_new = shared.report_failure()
+                            if is_new and pause > 0:
+                                print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
+                        except _AbortError as fatal:
+                            print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
+                            aborted = True
+                    break  # period N+1 exception = natural end of game
+            if aborted:
+                return
+            if periods:
+                combined = pd.concat(periods, ignore_index=True)
                 game_dir.mkdir(parents=True, exist_ok=True)
                 if output_format == "csv":
-                    df.to_csv(filepath, index=False)
+                    combined.to_csv(filepath, index=False)
                 else:
-                    df.to_parquet(filepath, index=False)
-            ping_log.record(season, season_type, data_type, duration, True)
-            pause = local.next_pause()
-            is_slow = duration > slow_fetch_threshold
-            if is_slow:
-                shared.report_slow_fetch()
-            backoff_remaining = max(0.0, shared._pause_until - time.time())
-            effective_wait = max(pause, backoff_remaining) + pre_wait
-            shared.report_success(effective_wait, reset_failures=not is_slow)
-            slow_tag = " [slow]" if is_slow else ""
-            print(f"  {game_id} fetch={duration:.2f}s wait={effective_wait:.2f}s cons={shared.cons_failures:.1f}{slow_tag} | ok={shared._total_successes} fail={shared._total_failures} avg_pause={shared.avg_pause:.2f}s")
-            shared.sleep(pause)
-        except _AbortError as fatal:
-            print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
-            return
-        except Exception as exc:
-            ping_log.record(season, season_type, data_type, time.time() - t0, False)
-            label = "Timeout" if isinstance(exc, requests.exceptions.Timeout) else "Error"
-            print(f"    {label} {data_type} {game_id}: {exc}")
+                    combined.to_parquet(filepath, index=False)
+        else:
+            t0 = 0.0
             try:
-                pause, is_new = shared.report_failure()
-                if is_new and pause > 0:
-                    print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
+                t_pre = time.time()
+                shared.check_pause()
+                pre_wait = time.time() - t_pre
+                t0 = time.time()
+                df = fetch_game_level_data(game_id, data_type, timeout=local.current_timeout(min_timeout))
+                duration = time.time() - t0
+                if df is not None and len(df) > 0:
+                    game_dir.mkdir(parents=True, exist_ok=True)
+                    if output_format == "csv":
+                        df.to_csv(filepath, index=False)
+                    else:
+                        df.to_parquet(filepath, index=False)
+                ping_log.record(season, season_type, data_type, duration, True)
+                pause = local.next_pause()
+                is_slow = duration > slow_fetch_threshold
+                if is_slow:
+                    shared.report_slow_fetch()
+                backoff_remaining = max(0.0, shared._pause_until - time.time())
+                effective_wait = max(pause, backoff_remaining) + pre_wait
+                shared.report_success(effective_wait, reset_failures=not is_slow)
+                slow_tag = " [slow]" if is_slow else ""
+                vpn_tag = f" | {shared.vpn_status}" if shared.vpn_status else ""
+                print(f"  {game_id} fetch={duration:.2f}s wait={effective_wait:.2f}s cons={shared.cons_failures:.1f}{slow_tag} | ok={shared._total_successes} fail={shared._total_failures} avg_pause={shared.avg_pause:.2f}s{vpn_tag}")
+                shared.sleep(pause)
             except _AbortError as fatal:
                 print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
                 return
+            except Exception as exc:
+                ping_log.record(season, season_type, data_type, time.time() - t0, False)
+                label = "Timeout" if isinstance(exc, requests.exceptions.Timeout) else "Error"
+                print(f"    {label} {data_type} {game_id}: {exc}")
+                try:
+                    pause, is_new = shared.report_failure()
+                    if is_new and pause > 0:
+                        print(f"    Backing off {pause:.1f}s ({shared.cons_failures} consecutive)")
+                except _AbortError as fatal:
+                    print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
+                    return
 
 
 def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
@@ -788,6 +905,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
     slow_fetch_threshold = float(job.get("slow_fetch_threshold", 5.0))
     vpn_switch_threshold = int(job.get("vpn_switch_threshold", 3))
     max_vpn_switches = int(job.get("max_vpn_switches", 5))
+    vpn_cooldown = int(job.get("vpn_cooldown", 0))
     use_vpn = bool(job.get("use_vpn", False))
     vpn_switcher = _VpnSwitcher(max_switches=max_vpn_switches) if use_vpn else None
     shared = _SharedRateState(
@@ -795,6 +913,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
         vpn_switch_threshold=vpn_switch_threshold,
         vpn_switcher=vpn_switcher,
         base_pause=base_pause,
+        vpn_cooldown=vpn_cooldown,
     )
     ping_log = _PingLog(output_dir.parent / "ping_log.csv")
     print(f"\nGame-level import: {len(season_tasks)} batches across {max_workers} workers\n")

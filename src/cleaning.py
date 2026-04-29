@@ -147,6 +147,10 @@ def run_clean_stage(job: Dict[str, Any]) -> None:
         team_df_opp = team_df_opp.rename(columns={'TEAM_ID': 'opp_id'})
         player_df = player_df.merge(team_df_opp, left_on=['GAME_ID', 'tm_opp_id'], right_on=['GAME_ID', 'opp_id'], how='left', suffixes=('', '_opp'))
 
+    # Derive is_home from MATCHUP once so downstream stages don't need text parsing
+    if "MATCHUP" in player_df.columns:
+        player_df["is_home"] = (~player_df["MATCHUP"].str.contains("@", regex=False)).astype("int8")
+
     # Drop redundant columns
     redundant_cols = [
         'tm_VIDEO_AVAILABLE', 'tm_SEASON_ID', 'tm_TEAM_ABBREVIATION', 'tm_TEAM_NAME',
