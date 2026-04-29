@@ -149,9 +149,11 @@ def run_features_stage(job):
     # --- join ---
     d_only = lambda p: [c for c in p.columns if c.startswith("D_")]
 
-    home_rows = pd.concat([home_off, home_def], axis=1).rename(columns={"tm_PTS": "team_pts"})
+    home_rows = pd.concat([home_off, home_def], axis=1).copy()
+    home_rows.rename(columns={"tm_PTS": "team_pts"}, inplace=True)
     home_rows["home"] = 1
-    road_rows = pd.concat([road_off, road_def], axis=1).rename(columns={"tm_PTS": "team_pts"})
+    road_rows = pd.concat([road_off, road_def], axis=1).copy()
+    road_rows.rename(columns={"tm_PTS": "team_pts"}, inplace=True)
     road_rows["home"] = 0
 
     if debug:

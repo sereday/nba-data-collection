@@ -170,6 +170,10 @@ def _run_player_impute(season_plan, data_dir, cleaned_df, output_format):
 
     agg_df, present_stats = _aggregate_logs(cleaned_df, group_keys_agg)
     _save_debug_sample(agg_df, os.path.join(debug_dir, "player_01_agg_logs_sample.csv"))
+    validations_dir = os.path.join(os.path.dirname(data_dir), "validations")
+    os.makedirs(validations_dir, exist_ok=True)
+    agg_df.to_csv(os.path.join(validations_dir, "player_agg_logs.csv"), index=False)
+    print(f"  Saved full player agg logs ({len(agg_df):,} rows) → validations/player_agg_logs.csv")
 
     season_stats_df = _load_season_stats(season_plan, data_dir, "player_season_stats", output_format)
     if season_stats_df.empty:

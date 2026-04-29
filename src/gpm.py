@@ -5,7 +5,7 @@ from config import get_output_directory, get_output_format
 
 def run_gpm_stage(job):
     output_dir = get_output_directory(job)
-    for ext, reader in [("parquet", pd.read_parquet), ("csv", pd.read_csv)]:
+    for ext in ["parquet", "csv"]:
         design_matrix_path = os.path.join(output_dir, f"design_matrix.{ext}")
         if os.path.exists(design_matrix_path):
             break
@@ -14,7 +14,6 @@ def run_gpm_stage(job):
         return
 
     print(f"Loading design matrix from {design_matrix_path}...")
-    df = reader(design_matrix_path)
 
     try:
         import h2o
@@ -24,19 +23,23 @@ def run_gpm_stage(job):
         return
 
     try:
-        h2o.init()
+        import psutil
+        mem_gb = int(psutil.virtual_memory().total / 1024**3 * 0.75)
+        h2o.init(max_mem_size=f"{mem_gb}g")
     except Exception as e:
         print(f"Failed to initialize H2O. Ensure Java 8+ is installed and available on PATH.\nError: {e}")
         return
 
     try:
-        o_cols = [c for c in df.columns if c.startswith("O_")]
-        d_cols = [c for c in df.columns if c.startswith("D_")]
+        print("Importing into H2O...")
+        h2o_frame = h2o.import_file(design_matrix_path)
+
+        o_cols = [c for c in h2o_frame.columns if c.startswith("O_")]
+        d_cols = [c for c in h2o_frame.columns if c.startswith("D_")]
         predictors = o_cols + d_cols + ["home"]
         response = "team_pts"
 
-        print(f"Converting to H2OFrame ({len(df)} rows, {len(predictors)} predictors)...")
-        h2o_frame = h2o.H2OFrame(df[predictors + [response]])
+        print(f"H2OFrame: {h2o_frame.shape[0]} rows, {len(predictors)} predictors")
 
         glm = H2OGeneralizedLinearEstimator(
             family="gaussian",
@@ -48,7 +51,9 @@ def run_gpm_stage(job):
         print("Training GLM...")
         glm.train(x=predictors, y=response, training_frame=h2o_frame)
 
-        coef_df = glm.coef_table().as_data_frame()
+        coef_df = pd.DataFrame(
+            [{"name": k, **v} for k, v in glm.coef_with_p_values().items()]
+        )
         # coef_df columns: name, coefficients, std_error, z_value, p_value
 
         off = coef_df[coef_df["name"].str.startswith("O_")].copy()
@@ -89,6 +94,6 @@ def run_gpm_stage(job):
 
     finally:
         try:
-            h2o.shutdown(prompt=False)
+            h2o.cluster().shutdown()
         except Exception:
             pass

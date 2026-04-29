@@ -193,7 +193,7 @@ class _SharedRateState:
 
     def __init__(self, max_failures: int = 5, vpn_switch_threshold: int = 3,
                  vpn_switcher: Optional[_VpnSwitcher] = None, base_pause: float = 1.0,
-                 vpn_cooldown: int = 0):
+                 vpn_cooldown: int = 0, pause_failure_cap: float = 0.0):
         self._lock = threading.Lock()
         self.cons_failures = 0.0
         self.max_failures = max_failures
@@ -206,6 +206,7 @@ class _SharedRateState:
         self._vpn_switcher = vpn_switcher
         self._base_pause = base_pause
         self._vpn_cooldown = vpn_cooldown  # successes on VPN before dropping back to own IP (0 = never)
+        self._pause_failure_cap = pause_failure_cap  # cap cons_failures in exponent (0 = no cap)
         self._vpn_successes = 0
         self._home_successes = 0
 
@@ -268,7 +269,8 @@ class _SharedRateState:
             self.cons_failures += 0.5
             rand = random.uniform(0, 1)
             rand2 = (0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)) * self._base_pause
-            pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) * self._base_pause + rand2
+            _exp_failures = min(self.cons_failures, self._pause_failure_cap) if self._pause_failure_cap > 0 else self.cons_failures
+            pause = np.exp(_exp_failures ** 1.25 * (1 + rand)) * self._base_pause + rand2
             self._pause_until = time.time() + pause
 
     @property
@@ -302,7 +304,8 @@ class _SharedRateState:
             else:
                 rand = random.uniform(0, 1)
                 rand2 = (0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)) * self._base_pause
-                pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) * self._base_pause + rand2
+                _exp_failures = min(self.cons_failures, self._pause_failure_cap) if self._pause_failure_cap > 0 else self.cons_failures
+                pause = np.exp(_exp_failures ** 1.25 * (1 + rand)) * self._base_pause + rand2
                 self._pause_until = time.time() + pause
                 return pause, True
 
@@ -324,7 +327,8 @@ class _SharedRateState:
                 )
             rand = random.uniform(0, 1)
             rand2 = 0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)
-            pause = np.exp(self.cons_failures ** 1.25 * (1 + rand)) + rand2
+            _exp_failures = min(self.cons_failures, self._pause_failure_cap) if self._pause_failure_cap > 0 else self.cons_failures
+            pause = np.exp(_exp_failures ** 1.25 * (1 + rand)) + rand2
             self._pause_until = time.time() + pause
             return pause, True
 
@@ -906,6 +910,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
     vpn_switch_threshold = int(job.get("vpn_switch_threshold", 3))
     max_vpn_switches = int(job.get("max_vpn_switches", 5))
     vpn_cooldown = int(job.get("vpn_cooldown", 0))
+    pause_failure_cap = float(job.get("pause_failure_cap", 0.0))
     use_vpn = bool(job.get("use_vpn", False))
     vpn_switcher = _VpnSwitcher(max_switches=max_vpn_switches) if use_vpn else None
     shared = _SharedRateState(
@@ -914,6 +919,7 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
         vpn_switcher=vpn_switcher,
         base_pause=base_pause,
         vpn_cooldown=vpn_cooldown,
+        pause_failure_cap=pause_failure_cap,
     )
     ping_log = _PingLog(output_dir.parent / "ping_log.csv")
     print(f"\nGame-level import: {len(season_tasks)} batches across {max_workers} workers\n")
