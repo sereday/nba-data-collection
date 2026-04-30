@@ -43,7 +43,8 @@ def run_gpm_stage(job):
 
         glm = H2OGeneralizedLinearEstimator(
             family="gaussian",
-            lambda_=0,
+            # lambda_=0,
+            max_active_predictors = 2000,
             compute_p_values=True,
             remove_collinear_columns=True,
             intercept=True,
@@ -51,9 +52,8 @@ def run_gpm_stage(job):
         print("Training GLM...")
         glm.train(x=predictors, y=response, training_frame=h2o_frame)
 
-        coef_df = pd.DataFrame(
-            [{"name": k, **v} for k, v in glm.coef_with_p_values().items()]
-        )
+        coef_df = glm.coef_with_p_values().as_data_frame()
+        coef_df = coef_df.rename(columns={"names": "name"})
         # coef_df columns: name, coefficients, std_error, z_value, p_value
 
         off = coef_df[coef_df["name"].str.startswith("O_")].copy()
