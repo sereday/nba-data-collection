@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from config import get_output_directory, get_output_format
 
@@ -90,7 +91,7 @@ def _build_run_summary(job: dict, merged: pd.DataFrame, metrics: dict) -> dict:
                  "offset_column", "weights_column", "beta_constraints"]
     glm_kwargs = job.get("glm_kwargs", {})
 
-    default_track = ["min_threshold", "threshold_type", "min_games", "min_total_games",
+    default_track = ["min_threshold", "feature_type", "min_games", "min_total_games",
                      "season_start", "season_end", "rapm_signal_threshold"]
     extra_track = job.get("mlflow_track_params", [])
     params = {k: job.get(k) for k in dict.fromkeys(default_track + extra_track)}
@@ -179,9 +180,10 @@ def _log_to_mlflow(job: dict, summary: dict) -> str | None:
         if rapm_metrics:
             mlflow.log_metrics(rapm_metrics)
 
-        # Top-5 ranked players — name as value
+        # Top-5 ranked players
         for i, p in enumerate(summary.get("top10_combined", [])[:5], 1):
             mlflow.log_param(f"rank_{i}", p["player_name"])
+            mlflow.log_metric(f"rank_{i}_gpm", float(p["combined_rating"]))
 
         # Spotlight players
         spotlight = summary.get("spotlight", {})
@@ -233,9 +235,12 @@ def run_gpm_stage(job) -> dict | None:
         print("Importing into H2O...")
         h2o_frame = h2o.import_file(design_matrix_path)
 
+        off_def_split = bool(job.get("off_def_split", True))
         o_cols = [c for c in h2o_frame.columns if c.startswith("O_")]
         d_cols = [c for c in h2o_frame.columns if c.startswith("D_")]
-        predictors = o_cols + d_cols + ["home"]
+        p_cols = [c for c in h2o_frame.columns if c.startswith("P_")]
+        home_col = ["home"] if "home" in h2o_frame.columns else []
+        predictors = (o_cols + d_cols + home_col) if off_def_split else (p_cols + home_col)
         response = "team_pts"
 
         print(f"H2OFrame: {h2o_frame.shape[0]} rows, {len(predictors)} predictors")
@@ -248,18 +253,26 @@ def run_gpm_stage(job) -> dict | None:
         coef_df = glm.coef_with_p_values().as_data_frame()
         coef_df = coef_df.rename(columns={"names": "name"})
 
-        off = coef_df[coef_df["name"].str.startswith("O_")].copy()
-        off["player_id"] = off["name"].str[2:]
-        off = off.rename(columns={"coefficients": "offensive_rating", "std_error": "offensive_se"})
-        off = off[["player_id", "offensive_rating", "offensive_se"]]
+        if off_def_split:
+            off = coef_df[coef_df["name"].str.startswith("O_")].copy()
+            off["player_id"] = off["name"].str[2:]
+            off = off.rename(columns={"coefficients": "offensive_rating", "std_error": "offensive_se"})
+            off = off[["player_id", "offensive_rating", "offensive_se"]]
 
-        dff = coef_df[coef_df["name"].str.startswith("D_")].copy()
-        dff["player_id"] = dff["name"].str[2:]
-        dff = dff.rename(columns={"coefficients": "defensive_rating", "std_error": "defensive_se"})
-        dff = dff[["player_id", "defensive_rating", "defensive_se"]]
+            dff = coef_df[coef_df["name"].str.startswith("D_")].copy()
+            dff["player_id"] = dff["name"].str[2:]
+            dff = dff.rename(columns={"coefficients": "defensive_rating", "std_error": "defensive_se"})
+            dff = dff[["player_id", "defensive_rating", "defensive_se"]]
 
-        results = pd.merge(off, dff, on="player_id", how="outer")
-        results["combined_rating"] = results["offensive_rating"] - results["defensive_rating"]
+            results = pd.merge(off, dff, on="player_id", how="outer")
+            results["combined_rating"] = results["offensive_rating"] - results["defensive_rating"]
+        else:
+            combined = coef_df[coef_df["name"].str.startswith("P_")].copy()
+            combined["player_id"] = combined["name"].str[2:]
+            combined = combined.rename(columns={"coefficients": "combined_rating", "std_error": "combined_se"})
+            combined["offensive_rating"] = np.nan
+            combined["defensive_rating"] = np.nan
+            results = combined[["player_id", "offensive_rating", "defensive_rating", "combined_rating", "combined_se"]]
 
         # Join player names from source data
         for name_file in ("imputed_player_data.csv", "cleaned_player_data.csv"):
@@ -270,6 +283,13 @@ def run_gpm_stage(job) -> dict | None:
                 results = results.merge(names_df, left_on="player_id", right_on="PLAYER_ID", how="left").drop(columns=["PLAYER_ID"])
                 results = results.rename(columns={"PLAYER_NAME": "player_name"})
                 break
+
+        # Join games played
+        games_path = output_dir / "player_games.csv"
+        if games_path.exists():
+            gp = pd.read_csv(games_path)
+            gp["PLAYER_ID"] = gp["PLAYER_ID"].astype(str)
+            results = results.merge(gp, left_on="player_id", right_on="PLAYER_ID", how="left").drop(columns=["PLAYER_ID"])
 
         # Enrich with RAPM metrics
         results, metrics = _run_rapm_validate(job, results)
@@ -292,12 +312,24 @@ def run_gpm_stage(job) -> dict | None:
         metrics["n_players"] = len(results)
 
         disp_name = name_col + ["player_id"]
-        print("\nTop 10 Offensive Ratings:")
-        print(results.nlargest(10, "offensive_rating")[disp_name + ["offensive_rating", "offensive_se"]].to_string(index=False))
-        print("\nTop 10 Defensive Ratings (lower = better at suppressing opponent scoring):")
-        print(results.nsmallest(10, "defensive_rating")[disp_name + ["defensive_rating", "defensive_se"]].to_string(index=False))
-        print("\nTop 10 Combined Ratings (offensive - defensive):")
-        print(results.head(10)[disp_name + ["offensive_rating", "defensive_rating", "combined_rating"]].to_string(index=False))
+        if off_def_split:
+            print("\nTop 10 Offensive Ratings:")
+            print(results.nlargest(10, "offensive_rating")[disp_name + ["offensive_rating", "offensive_se"]].to_string(index=False))
+            print("\nTop 10 Defensive Ratings (lower = better at suppressing opponent scoring):")
+            print(results.nsmallest(10, "defensive_rating")[disp_name + ["defensive_rating", "defensive_se"]].to_string(index=False))
+            print("\nTop 10 Combined Ratings (offensive - defensive):")
+            print(results.head(10)[disp_name + ["offensive_rating", "defensive_rating", "combined_rating"]].to_string(index=False))
+        else:
+            se_col = ["combined_se"] if "combined_se" in results.columns else []
+            print("\nTop 10 Combined Ratings (signed home−road coefficient):")
+            print(results.head(10)[disp_name + ["combined_rating"] + se_col].to_string(index=False))
+
+        rapm_cols = [c for c in ["rapm_offense", "rapm_defense", "rapm_total"] if c in results.columns]
+        if rapm_cols:
+            matched = results.dropna(subset=["rapm_total"]).head(20)
+            gp_col = ["games_played"] if "games_played" in results.columns else []
+            print(f"\nGPM vs xRAPM — top 20 by GPM combined ({len(matched)} matched):")
+            print(matched[disp_name + ["combined_rating"] + gp_col + rapm_cols].to_string(index=False))
 
         results_dir = _ROOT / "results"
         results_dir.mkdir(exist_ok=True)
