@@ -148,13 +148,19 @@ def _compute_imputed(agg_df, season_stats_df, group_keys, present_stats, debug_d
 
 def _apply_imputed(cleaned_df, imp_df, group_keys, present_stats):
     df = cleaned_df.merge(imp_df, on=group_keys, how="left")
+
+    new_cols = {}
     for s in present_stats:
         imp_col = f"{s}_imp"
         if imp_col not in df.columns:
             continue
         raw = df[s] if s in df.columns else pd.Series(np.nan, index=df.index)
         # null imp_col means player had no season stats match — leave filled null so errors are visible
-        df[f"{s}_filled"] = np.where(raw.notna(), raw, df[imp_col])
+        new_cols[f"{s}_filled"] = np.where(raw.notna(), raw, df[imp_col])
+
+    if new_cols:
+        df = pd.concat([df, pd.DataFrame(new_cols, index=df.index)], axis=1)
+
     drop_cols = [f"{s}_imp" for s in present_stats if f"{s}_imp" in df.columns]
     df = df.drop(columns=drop_cols)
     return df
@@ -162,7 +168,7 @@ def _apply_imputed(cleaned_df, imp_df, group_keys, present_stats):
 
 def _run_player_impute(season_plan, data_dir, cleaned_df, output_format):
     group_keys_agg = ["PLAYER_ID", "TEAM_ID", "season", "season_type"]
-    debug_dir = os.path.join(os.path.dirname(data_dir), "debug_inspections", "impute")
+    debug_dir = os.path.join(os.path.dirname(data_dir), "debug", "impute")
 
     if cleaned_df is None or cleaned_df.empty:
         warnings.warn("cleaned_player_data is empty or missing; skipping player impute.")
@@ -170,10 +176,9 @@ def _run_player_impute(season_plan, data_dir, cleaned_df, output_format):
 
     agg_df, present_stats = _aggregate_logs(cleaned_df, group_keys_agg)
     _save_debug_sample(agg_df, os.path.join(debug_dir, "player_01_agg_logs_sample.csv"))
-    validations_dir = os.path.join(os.path.dirname(data_dir), "validations")
-    os.makedirs(validations_dir, exist_ok=True)
-    agg_df.to_csv(os.path.join(validations_dir, "player_agg_logs.csv"), index=False)
-    print(f"  Saved full player agg logs ({len(agg_df):,} rows) → validations/player_agg_logs.csv")
+    os.makedirs(debug_dir, exist_ok=True)
+    agg_df.to_csv(os.path.join(debug_dir, "player_agg_logs.csv"), index=False)
+    print(f"  Saved full player agg logs ({len(agg_df):,} rows) → debug/impute/player_agg_logs.csv")
 
     season_stats_df = _load_season_stats(season_plan, data_dir, "player_season_stats", output_format)
     if season_stats_df.empty:
@@ -202,7 +207,7 @@ def _run_player_impute(season_plan, data_dir, cleaned_df, output_format):
 
 
 def _run_team_impute(season_plan, data_dir, output_format):
-    debug_dir = os.path.join(os.path.dirname(data_dir), "debug_inspections", "impute")
+    debug_dir = os.path.join(os.path.dirname(data_dir), "debug", "impute")
     frames = []
     for season, season_type in season_plan:
         base = os.path.join(data_dir, f"{season}_{season_type}_teams")

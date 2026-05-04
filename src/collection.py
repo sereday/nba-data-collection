@@ -12,7 +12,6 @@ import time
 
 import requests
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -96,8 +95,8 @@ GAME_LEVEL_EXCLUDED_SEASON_TYPES: dict[str, set] = {
 # Season-level data types only available from a certain year.
 # Types not listed here are attempted for all seasons.
 SEASON_DATA_TYPE_MIN_YEAR: dict[str, int] = {
-    "players":             1996,  # LeagueGameLog (players); pre-97 covered by patch stage
-    "teams":               1996,  # LeagueGameLog (teams); pre-97 covered by patch stage
+    "players":             1946,  # LeagueGameLog (players)
+    "teams":               1946,  # LeagueGameLog (teams)
     "player_season_stats": 1996,  # LeagueDashPlayerStats; pre-97 covered by patch stage
     "team_season_stats":   1996,  # LeagueDashTeamStats; pre-97 covered by patch stage
     "player_bios":         1996,  # LeagueDashPlayerBioStats; PBP era only
@@ -112,72 +111,6 @@ class _AbortError(Exception):
     """Raised to stop a worker immediately — abort takes priority over all other handling."""
 
 
-class _VpnSwitcher:
-    """Activate/deactivate Mullvad via CLI. Assumes 'mullvad' is on PATH.
-
-    Starts assuming own IP (VPN inactive). On switch(): connects to VPN (or changes
-    server if already active). On disconnect(): drops back to own IP.
-    max_switches counts VPN activations only, not switch-backs.
-    """
-
-    def __init__(self, max_switches: int = 5):
-        self._lock = threading.Lock()
-        self._count = 0
-        self.max_switches = max_switches
-        self._active = False  # assume starting on own IP
-
-    @property
-    def active(self) -> bool:
-        return self._active
-
-    @property
-    def exhausted(self) -> bool:
-        return self._count >= self.max_switches
-
-    def switch(self) -> bool:
-        """Activate VPN (or switch to a new server if already active). Returns True on success."""
-        with self._lock:
-            if self._count >= self.max_switches:
-                print(f"  VPN: max switches ({self.max_switches}) exhausted")
-                return False
-            self._count += 1
-            n = self._count
-            already_active = self._active
-
-        try:
-            if already_active:
-                print(f"  VPN switch #{n}/{self.max_switches}: switching to new server...")
-                subprocess.run(["mullvad", "disconnect"], timeout=15, capture_output=True, check=False)
-                time.sleep(2)
-            else:
-                print(f"  VPN switch #{n}/{self.max_switches}: activating VPN...")
-            subprocess.run(["mullvad", "connect"], timeout=30, capture_output=True, check=False)
-            time.sleep(5)
-            with self._lock:
-                self._active = True
-            print(f"  VPN switch #{n}/{self.max_switches}: connected")
-            return True
-        except FileNotFoundError:
-            print("  VPN switch failed: 'mullvad' not found — is Mullvad installed and on PATH?")
-            return False
-        except subprocess.TimeoutExpired:
-            print(f"  VPN switch #{n}: timed out")
-            return False
-        except Exception as exc:
-            print(f"  VPN switch #{n}: {exc}")
-            return False
-
-    def disconnect(self) -> None:
-        """Drop back to own IP."""
-        try:
-            subprocess.run(["mullvad", "disconnect"], timeout=15, capture_output=True, check=False)
-            with self._lock:
-                self._active = False
-            print("  VPN: switched back to own IP")
-        except Exception as exc:
-            print(f"  VPN disconnect failed: {exc}")
-
-
 class _SharedRateState:
     """Shared across all workers — owns failure counting and backoff timing.
 
@@ -185,15 +118,11 @@ class _SharedRateState:
                   _AbortError after max_failures consecutive failures.
     Pile-up guard: if a backoff is already in effect when a new failure arrives,
                    cons_failures is not incremented (same rate-limit event).
-    VPN switch: at vpn_switch_threshold consecutive failures, disconnect/reconnect
-                NordVPN and reset all counters (fresh IP = fresh slate).
-    Global abort: if cumulative failures exceed successes and no VPN switcher is
-                  configured, all workers are stopped immediately via os._exit(1).
+    Global abort: if cumulative failures exceed successes, all workers are stopped immediately.
     """
 
-    def __init__(self, max_failures: int = 5, vpn_switch_threshold: int = 3,
-                 vpn_switcher: Optional[_VpnSwitcher] = None, base_pause: float = 1.0,
-                 vpn_cooldown: int = 0, pause_failure_cap: float = 0.0):
+    def __init__(self, max_failures: int = 5, base_pause: float = 1.0,
+                 pause_failure_cap: float = 0.0):
         self._lock = threading.Lock()
         self.cons_failures = 0.0
         self.max_failures = max_failures
@@ -202,13 +131,8 @@ class _SharedRateState:
         self._total_failures = 0
         self._total_pause = 0.0
         self._aborted = False
-        self._vpn_switch_threshold = vpn_switch_threshold
-        self._vpn_switcher = vpn_switcher
         self._base_pause = base_pause
-        self._vpn_cooldown = vpn_cooldown  # successes on VPN before dropping back to own IP (0 = never)
         self._pause_failure_cap = pause_failure_cap  # cap cons_failures in exponent (0 = no cap)
-        self._vpn_successes = 0
-        self._home_successes = 0
 
     def sleep(self, seconds: float) -> None:
         """Success-path sleep, interruptible if a backoff fires or abort triggers."""
@@ -235,32 +159,11 @@ class _SharedRateState:
             time.sleep(0.25)
 
     def report_success(self, pause: float = 0.0, reset_failures: bool = True) -> None:
-        do_disconnect = False
         with self._lock:
             self._total_successes += 1
             self._total_pause += pause
             if reset_failures and time.time() >= self._pause_until:
                 self.cons_failures = 0.0
-            if self._vpn_switcher is not None and self._vpn_switcher.active:
-                self._vpn_successes += 1
-                if self._vpn_cooldown > 0 and self._vpn_successes >= self._vpn_cooldown:
-                    self._vpn_successes = 0
-                    self._home_successes = 0
-                    self.cons_failures = 0.0
-                    self._pause_until = 0.0
-                    do_disconnect = True
-            elif self._vpn_switcher is not None:
-                self._home_successes += 1
-        if do_disconnect:
-            self._vpn_switcher.disconnect()  # type: ignore[union-attr]
-
-    @property
-    def vpn_status(self) -> str:
-        if self._vpn_switcher is None:
-            return ""
-        if self._vpn_switcher.active:
-            return f"vpn:{self._vpn_successes}/{self._vpn_cooldown}"
-        return f"own:{self._home_successes}"
 
     def report_slow_fetch(self) -> None:
         with self._lock:
@@ -279,13 +182,10 @@ class _SharedRateState:
 
     def report_failure(self) -> tuple[float, bool]:
         """Returns (pause, is_new) — is_new=False means already in backoff (pile-up).
-        Raises _AbortError at max_failures or when VPN switches are exhausted.
-        At vpn_switch_threshold consecutive failures, triggers a VPN server switch."""
-        _try_vpn = False
-
+        Raises _AbortError at max_failures consecutive failures."""
         with self._lock:
             self._total_failures += 1
-            if self._total_failures > self._total_successes and self._vpn_switcher is None:
+            if self._total_failures > self._total_successes:
                 self._aborted = True
                 print(
                     f"\nABORT: {self._total_failures} cumulative failures exceed "
@@ -297,9 +197,7 @@ class _SharedRateState:
             if time.time() < self._pause_until:
                 return self._pause_until - time.time(), False
             self.cons_failures += 1
-            if self._vpn_switcher is not None and self.cons_failures >= self._vpn_switch_threshold:
-                _try_vpn = True
-            elif self.cons_failures >= self.max_failures:
+            if self.cons_failures >= self.max_failures:
                 raise _AbortError(f"{self.cons_failures} consecutive failures")
             else:
                 rand = random.uniform(0, 1)
@@ -308,29 +206,6 @@ class _SharedRateState:
                 pause = np.exp(_exp_failures ** 1.25 * (1 + rand)) * self._base_pause + rand2
                 self._pause_until = time.time() + pause
                 return pause, True
-
-        # VPN switch outside the lock — takes several seconds
-        switched = self._vpn_switcher.switch()  # type: ignore[union-attr]
-        with self._lock:
-            if switched:
-                self._total_failures = 0
-                self._total_successes = 0
-                self.cons_failures = 0
-                self._pause_until = 0.0
-                self._vpn_successes = 0
-                self._home_successes = 0
-                return 0.0, True
-            # Switch failed — fall back to backoff or abort
-            if self.cons_failures >= self.max_failures or self._vpn_switcher.exhausted:
-                raise _AbortError(
-                    f"VPN switch failed after {self.cons_failures} consecutive failures"
-                )
-            rand = random.uniform(0, 1)
-            rand2 = 0.0572 + random.uniform(0, 0.1) + random.uniform(0, 0.85)
-            _exp_failures = min(self.cons_failures, self._pause_failure_cap) if self._pause_failure_cap > 0 else self.cons_failures
-            pause = np.exp(_exp_failures ** 1.25 * (1 + rand)) + rand2
-            self._pause_until = time.time() + pause
-            return pause, True
 
 
 class _WorkerDelay:
@@ -729,8 +604,7 @@ def _run_season_game_level(
                     effective_wait = max(pause, backoff_remaining) + pre_wait
                     shared.report_success(effective_wait, reset_failures=not is_slow)
                     slow_tag = " [slow]" if is_slow else ""
-                    vpn_tag = f" | {shared.vpn_status}" if shared.vpn_status else ""
-                    print(f"  {game_id} p{period} fetch={duration:.2f}s wait={effective_wait:.2f}s cons={shared.cons_failures:.1f}{slow_tag} | ok={shared._total_successes} fail={shared._total_failures} avg_pause={shared.avg_pause:.2f}s{vpn_tag}")
+                    print(f"  {game_id} p{period} fetch={duration:.2f}s wait={effective_wait:.2f}s cons={shared.cons_failures:.1f}{slow_tag} | ok={shared._total_successes} fail={shared._total_failures} avg_pause={shared.avg_pause:.2f}s")
                     shared.sleep(pause)
                 except _AbortError as fatal:
                     print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
@@ -783,8 +657,7 @@ def _run_season_game_level(
                 effective_wait = max(pause, backoff_remaining) + pre_wait
                 shared.report_success(effective_wait, reset_failures=not is_slow)
                 slow_tag = " [slow]" if is_slow else ""
-                vpn_tag = f" | {shared.vpn_status}" if shared.vpn_status else ""
-                print(f"  {game_id} fetch={duration:.2f}s wait={effective_wait:.2f}s cons={shared.cons_failures:.1f}{slow_tag} | ok={shared._total_successes} fail={shared._total_failures} avg_pause={shared.avg_pause:.2f}s{vpn_tag}")
+                print(f"  {game_id} fetch={duration:.2f}s wait={effective_wait:.2f}s cons={shared.cons_failures:.1f}{slow_tag} | ok={shared._total_successes} fail={shared._total_failures} avg_pause={shared.avg_pause:.2f}s")
                 shared.sleep(pause)
             except _AbortError as fatal:
                 print(f"    {fatal} — aborting {season} {season_type} [{data_type}]")
@@ -902,47 +775,29 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
     if not season_tasks:
         return
 
-    max_workers = int(job.get("max_workers", 4))
     max_failures = int(job.get("max_failures", 5))
-    base_pause = float(job.get("base_pause", 1.0))
+    base_pause = float(job.get("initial_pause_avg", 1.0))
     min_timeout = float(job.get("min_timeout", 3.0))
     slow_fetch_threshold = float(job.get("slow_fetch_threshold", 5.0))
-    vpn_switch_threshold = int(job.get("vpn_switch_threshold", 3))
-    max_vpn_switches = int(job.get("max_vpn_switches", 5))
-    vpn_cooldown = int(job.get("vpn_cooldown", 0))
     pause_failure_cap = float(job.get("pause_failure_cap", 0.0))
-    use_vpn = bool(job.get("use_vpn", False))
-    vpn_switcher = _VpnSwitcher(max_switches=max_vpn_switches) if use_vpn else None
     shared = _SharedRateState(
         max_failures=max_failures,
-        vpn_switch_threshold=vpn_switch_threshold,
-        vpn_switcher=vpn_switcher,
         base_pause=base_pause,
-        vpn_cooldown=vpn_cooldown,
         pause_failure_cap=pause_failure_cap,
     )
     ping_log = _PingLog(output_dir.parent / "ping_log.csv")
-    print(f"\nGame-level import: {len(season_tasks)} batches across {max_workers} workers\n")
+    print(f"\nGame-level import: {len(season_tasks)} batches\n")
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                _run_season_game_level,
+    for season, season_type, data_type in season_tasks:
+        if shared._aborted:
+            break
+        try:
+            _run_season_game_level(
                 season, season_type, data_type,
                 output_dir, output_format, overwrite, shared, ping_log, base_pause, min_timeout, slow_fetch_threshold,
-            ): (season, season_type, data_type)
-            for season, season_type, data_type in season_tasks
-        }
-        for future in as_completed(futures):
-            s, st, dt = futures[future]
-            try:
-                future.result()
-            except Exception as exc:
-                print(f"  Worker failed for {s} {st} [{dt}]: {exc}")
-            if shared._aborted:
-                for f in futures:
-                    f.cancel()
-                break
+            )
+        except Exception as exc:
+            print(f"  Failed {season} {season_type} [{data_type}]: {exc}")
 
     ping_log.flush()
     print(f"Ping log saved to {ping_log._path}")
@@ -952,37 +807,46 @@ def run_import_stage(job: Dict[str, Any], overwrite: bool = False) -> None:
 
 def run_job(job: Dict[str, Any]) -> None:
     """Execute the enabled pipeline stages."""
+    from notify import send_completion_email
     enabled_stages = get_enabled_stages(job)
     overwrite = bool(job.get("overwrite", False))
     print(f"Enabled pipeline stages: {enabled_stages}\n")
 
-    if "import" in enabled_stages:
-        run_import_stage(job, overwrite=overwrite)
+    error = None
+    summary = None
+    try:
+        if "import" in enabled_stages:
+            run_import_stage(job, overwrite=overwrite)
 
-    if "patch" in enabled_stages:
-        from patch import run_patch_stage
-        run_patch_stage(job, overwrite=overwrite)
+        if "patch" in enabled_stages:
+            from patch import run_patch_stage
+            run_patch_stage(job, overwrite=overwrite)
 
-    if "import_validate" in enabled_stages:
-        from validate import run_validation
-        run_validation(job)
+        if "import_validate" in enabled_stages:
+            from validate import run_validation
+            run_validation(job)
 
-    if "clean" in enabled_stages:
-        run_clean_stage(job)
+        if "clean" in enabled_stages:
+            run_clean_stage(job)
 
-    if "impute" in enabled_stages:
-        from impute import run_impute_stage
-        run_impute_stage(job)
+        if "impute" in enabled_stages:
+            from impute import run_impute_stage
+            run_impute_stage(job)
 
-    if "features" in enabled_stages:
-        from features import run_features_stage
-        run_features_stage(job)
+        if "features" in enabled_stages:
+            from features import run_features_stage
+            run_features_stage(job)
 
-    if "gpm" in enabled_stages:
-        from gpm import run_gpm_stage
-        run_gpm_stage(job)
+        if "gpm" in enabled_stages:
+            from gpm import run_gpm_stage
+            summary = run_gpm_stage(job)
 
-    print("\nPipeline completed successfully.")
+        print("\nPipeline completed successfully.")
+    except Exception as exc:
+        error = exc
+        raise
+    finally:
+        send_completion_email(job, enabled_stages, error=error, summary=summary)
 
 
 def main(job: Dict[str, Any] | None = None) -> None:

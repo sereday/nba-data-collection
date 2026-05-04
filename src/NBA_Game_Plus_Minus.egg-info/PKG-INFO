@@ -1,3 +1,12 @@
+Metadata-Version: 2.4
+Name: NBA_Game_Plus_Minus
+Version: 0.1.0
+Summary: NBA data collection pipeline for API-driven data extraction and analysis.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: nba_api>=1.5.0
+Requires-Dist: pandas>=2.0.0
+
 # NBA Game Plus-Minus
 
 A Python pipeline that collects historical NBA data from the NBA Stats API, cleans and merges it, engineers features for lineup analysis, and estimates player game-plus-minus using a regularized regression model.

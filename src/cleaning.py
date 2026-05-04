@@ -149,6 +149,7 @@ def run_clean_stage(job: Dict[str, Any]) -> None:
 
     # Derive is_home from MATCHUP once so downstream stages don't need text parsing
     if "MATCHUP" in player_df.columns:
+        player_df = player_df.copy()
         player_df["is_home"] = (~player_df["MATCHUP"].str.contains("@", regex=False)).astype("int8")
 
     # Drop redundant columns

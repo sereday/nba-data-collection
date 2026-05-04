@@ -6,11 +6,6 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-DEFAULT_OUTPUT_DIR = Path("data")
-DEFAULT_OUTPUT_FORMAT = "csv"
-DEFAULT_PIPELINE_STAGES = ["collect"]
-
-
 def normalize_stage(stage: Any) -> str:
     """Normalize a stage name to lowercase and stripped."""
     return str(stage).strip().lower()
@@ -28,18 +23,17 @@ def load_job_request(filepath: str = "job_request.json") -> Dict[str, Any]:
 
 def get_output_directory(job: Dict[str, Any]) -> Path:
     """Get the output directory from job config."""
-    return Path(job.get("output_dir", DEFAULT_OUTPUT_DIR))
+    return Path(job["output_dir"])
 
 
 def get_output_format(job: Dict[str, Any]) -> str:
     """Get the output format from job config."""
-    return str(job.get("output_format", DEFAULT_OUTPUT_FORMAT)).lower()
+    return str(job["output_format"]).lower()
 
 
 def get_requested_stages(job: Dict[str, Any]) -> list[str]:
     """Get the requested pipeline stages from job config."""
-    stages = job.get("stages", DEFAULT_PIPELINE_STAGES)
-    return [normalize_stage(stage) for stage in stages]
+    return [normalize_stage(stage) for stage in job["stages"]]
 
 
 def get_skipped_stages(job: Dict[str, Any]) -> list[str]:
