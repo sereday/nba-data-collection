@@ -174,16 +174,22 @@ def _log_to_mlflow(job: dict, summary: dict) -> str | None:
         mlflow.log_params({k: str(v) if v is not None else "null"
                            for k, v in summary.get("params", {}).items()})
 
-        # RAPM validation metrics (only when present)
+        # RAPM validation metrics + numeric params for evaluation comparison
         rapm_metrics = {k: float(v) for k, v in summary.get("metrics", {}).items()
                         if isinstance(v, (int, float))}
-        if rapm_metrics:
-            mlflow.log_metrics(rapm_metrics)
+        numeric_param_keys = [
+            "glm_lambda_", "glm_alpha", "glm_max_active_predictors",
+            "min_games", "min_threshold", "off_def_split", "pace_adjustment",
+        ]
+        param_metrics = {k: float(v) for k, v in summary.get("params", {}).items()
+                         if k in numeric_param_keys and v is not None}
+        all_metrics = {**rapm_metrics, **param_metrics}
+        if all_metrics:
+            mlflow.log_metrics(all_metrics)
 
         # Top-5 ranked players
         for i, p in enumerate(summary.get("top10_combined", [])[:5], 1):
-            mlflow.log_param(f"rank_{i}", p["player_name"])
-            mlflow.log_metric(f"rank_{i}_gpm", float(p["combined_rating"]))
+            mlflow.log_param(f"rank_{i}_gpm", p["player_name"])
 
         # Spotlight players
         spotlight = summary.get("spotlight", {})
