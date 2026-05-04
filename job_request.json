@@ -1,4 +1,6 @@
 {
+  "run_name": "",
+  "run_name__note": "optional label for this run — leave blank to auto-generate from parameters; timestamp suffix added if name already exists",
   "season_start": "1946-47",
   "season_end": "2020-21",
   "season_types": ["Regular", "Playoffs", "Preseason", "PlayIn", "IST"],
@@ -30,5 +32,45 @@
   "debug_stop_after": "matrix",
   "stages": ["import", "patch", "import_validate", "clean", "impute", "features", "gpm"],
   "skip_stages": ["import", "patch", "import_validate", "clean", "impute", "features"],
-  "overwrite": false
+  "overwrite": false,
+
+  "── SECTION: MLFLOW ──────────────────────────────────────────": "",
+  "mlflow_tracking_uri": "sqlite:///mlflow.db",
+  "mlflow_experiment": "nba-gpm",
+  "mlflow_track_params": [],
+  "mlflow_track_params__note": "additional top-level job keys to log as MLflow params; min_threshold, threshold_type, min_games, season range, rapm_signal_threshold and all glm_kwargs are always included",
+
+  "── SECTION: REFRESHES ───────────────────────────────────────": "",
+  "validation_script": "python research/rapm_import.py",
+  "rapm_signal_threshold_note": "min name_signal to include a player in RAPM validation (run automatically in gpm stage); see data/rapm_30y.csv — signal = cos_best / (cos_best + cos_2nd)",
+  "rapm_signal_threshold": 0.53,
+  "bpm_prior_script": "tbd",
+  "4qest_script": "tbd",
+  "qtrpm_script": "tbd",
+  "apm_script": "tbd",
+  "min_impute_script": "tbd",
+  
+  "── SECTION: GPM PARAMETERS ─────────────────────────────────": "",
+  "min_threshold": 24.0,
+  "min_threshold__note": "minimum minutes to qualify for a game; interpreted as a fraction of 48 when threshold_type=pct",
+  "threshold_type": "minutes",
+  "threshold_type__note": "minutes = raw minutes played; pct = fraction of 48 minutes",
+  "glm_note": "kwargs passed directly to H2OGeneralizedLinearEstimator — null values are excluded. Docs: https://docs.h2o.ai/h2o/latest-stable/h2o-docs/data-science/glm.html",
+  "glm_kwargs": {
+    "family": "gaussian",
+    "family__note": "tweedie might be most appropriate for count-like scoring data",
+    "lambda_": null,
+    "lambda__note": "null = H2O auto-selects; 0 = no regularization (OLS)",
+    "alpha": null,
+    "alpha__note": "null = H2O auto-selects; 0 = ridge, 1 = lasso",
+    "max_active_predictors": 2000,
+    "compute_p_values": true,
+    "remove_collinear_columns": true,
+    "intercept": true,
+    "offset_column": null,
+    "weights_column": null,
+    "beta_constraints": null,
+    "nfolds": 0,
+    "validation_frame": null
+  }
 }
