@@ -86,10 +86,27 @@ def _lookup_spotlight(merged: pd.DataFrame) -> dict:
     return out
 
 
+def _migrate_top10_history(history_path) -> None:
+    """Rename old initials-based spotlight columns to full-name format."""
+    rename = {f"spotlight.{init}": f"spotlight.{name.replace(' ', '_')}"
+              for init, name in SPOTLIGHT_PLAYERS.items()}
+    # Strip any stray leading-space column names
+    df = pd.read_csv(history_path)
+    df.columns = [c.strip() for c in df.columns]
+    changed = {old: new for old, new in rename.items() if old in df.columns and new not in df.columns}
+    if changed:
+        df = df.rename(columns=changed)
+        df.to_csv(history_path, index=False)
+        print(f"  Migrated {len(changed)} spotlight column(s) to full-name format")
+
+
 def _append_top10_history(summary: dict, run_id: str) -> None:
     results_dir = _ROOT / "results"
     results_dir.mkdir(exist_ok=True)
     history_path = results_dir / "top10_history.csv"
+
+    if history_path.exists():
+        _migrate_top10_history(history_path)
 
     row = {
         "run_id":        run_id,
@@ -104,9 +121,9 @@ def _append_top10_history(summary: dict, run_id: str) -> None:
 
     new_df = pd.DataFrame([row])
     if history_path.exists():
-        existing = pd.read_csv(history_path, nrows=0)
-        new_df = new_df.reindex(columns=existing.columns)
-        new_df.to_csv(history_path, mode="a", header=False, index=False)
+        existing = pd.read_csv(history_path)
+        combined = pd.concat([existing, new_df], ignore_index=True)
+        combined.to_csv(history_path, index=False)
     else:
         new_df.to_csv(history_path, index=False)
     print(f"  Top-10 history appended → {history_path}")
