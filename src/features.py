@@ -74,6 +74,21 @@ def _flatten(d: dict, prefix: str = "") -> dict:
     return out
 
 
+def _build_qualified_games(home_pivot: pd.DataFrame, road_pivot: pd.DataFrame, prefix: str) -> pd.DataFrame:
+    def _counts(pivot):
+        cols = [c for c in pivot.columns if c.startswith(f"{prefix}_")]
+        counts = (pivot[cols] != 0).sum()
+        counts.index = [c[len(prefix) + 1:] for c in counts.index]
+        return counts
+
+    home_q = _counts(home_pivot).rename("qualified_home")
+    road_q = _counts(road_pivot).rename("qualified_road")
+    qg = pd.concat([home_q, road_q], axis=1).fillna(0).astype(int).reset_index()
+    qg.columns = ["PLAYER_ID", "qualified_home", "qualified_road"]
+    qg["qualified_total"] = qg["qualified_home"] + qg["qualified_road"]
+    return qg
+
+
 def _save_debug(info: dict, debug_dir: str, filename: str) -> None:
     os.makedirs(debug_dir, exist_ok=True)
 
@@ -240,6 +255,9 @@ def run_features_stage(job):
                 "players_only_road": len(set(d_cols) - set(o_cols)),
             }, debug_dir, "features_04_matrix.json")
 
+        _build_qualified_games(home_off, road_off, "O").to_csv(
+            os.path.join(out_dir, "player_qualified_games.csv"), index=False
+        )
         print(f"Design matrix shape: {matrix.shape}")
         print(f"O cols: {sum(c.startswith('O_') for c in matrix.columns)}  D cols: {sum(c.startswith('D_') for c in matrix.columns)}")
 
@@ -303,6 +321,10 @@ def run_features_stage(job):
                 "null_team_pts": int(matrix["team_pts"].isna().sum()),
             }, debug_dir, "features_04_matrix.json")
 
+        home_feats_only = home_lineup.drop(columns=["PtDiff"], errors="ignore")
+        _build_qualified_games(home_feats_only, road_lineup, "P").to_csv(
+            os.path.join(out_dir, "player_qualified_games.csv"), index=False
+        )
         print(f"Design matrix shape: {matrix.shape}")
         print(f"P cols (signed home−road): {sum(c.startswith('P_') for c in matrix.columns)}")
 

@@ -298,6 +298,13 @@ def run_gpm_stage(job) -> dict | None:
             gp["PLAYER_ID"] = gp["PLAYER_ID"].astype(str)
             results = results.merge(gp, left_on="player_id", right_on="PLAYER_ID", how="left").drop(columns=["PLAYER_ID"])
 
+        # Join qualified games (games meeting min_threshold)
+        qual_path = output_dir / "player_qualified_games.csv"
+        if qual_path.exists():
+            qg = pd.read_csv(qual_path)
+            qg["PLAYER_ID"] = qg["PLAYER_ID"].astype(str)
+            results = results.merge(qg, left_on="player_id", right_on="PLAYER_ID", how="left").drop(columns=["PLAYER_ID"])
+
         # Enrich with RAPM metrics
         results, metrics = _run_rapm_validate(job, results)
 
