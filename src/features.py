@@ -58,7 +58,7 @@ def _build_pivot(df, is_home: int, prefix: str, min_threshold: float, feature_ty
     pivot = pd.DataFrame(data, index=all_games, columns=[f"{prefix}_{p}" for p in all_players])
     pivot.index.name = "GAME_ID"
     if target_col is not None:
-        pts = side.groupby("GAME_ID")[target_col].first().rename(target_col)
+        pts = side.groupby("GAME_ID")[target_col].first().reindex(pivot.index).rename(target_col)
         pivot = pd.concat([pivot, pts], axis=1)
     return pivot
 

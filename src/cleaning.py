@@ -95,9 +95,14 @@ def run_clean_stage(job: Dict[str, Any]) -> None:
     # Concatenate all roster data
     if all_roster_dfs:
         roster_df = pd.concat(all_roster_dfs, ignore_index=True)
-        # Outer join player to roster on PLAYER_ID (and TEAM_ID if needed)
-        # Roster data typically includes player info like position, height, weight, etc.
-        player_df = player_df.merge(roster_df, on=['PLAYER_ID'], how='left', suffixes=('', '_roster'))
+        # Join on PLAYER_ID + season to avoid fan-out when a player has roster records
+        # from multiple seasons (each game would otherwise match every season's roster row).
+        player_df = player_df.merge(roster_df, on=['PLAYER_ID', 'season'], how='left', suffixes=('', '_roster'))
+        before = len(player_df)
+        player_df = player_df.drop_duplicates(subset=['PLAYER_ID', 'TEAM_ID', 'GAME_ID'])
+        after = len(player_df)
+        if before != after:
+            print(f"  Dropped {before - after:,} duplicate rows after roster join")
     else:
         print("No roster data found, proceeding without roster join.")
 
@@ -156,7 +161,7 @@ def run_clean_stage(job: Dict[str, Any]) -> None:
         'tm_VIDEO_AVAILABLE', 'tm_SEASON_ID', 'tm_TEAM_ABBREVIATION', 'tm_TEAM_NAME',
         'tm_GAME_DATE', 'tm_MATCHUP', 'tm_WL', 'season_tm', 'season_type_tm', 'tm_opp_id',
         'opp_VIDEO_AVAILABLE', 'opp_SEASON_ID', 'opp_GAME_DATE', 'opp_MATCHUP', 'opp_WL',
-        'season_opp', 'season_type_opp', 'opp_opp_id'
+        'season_opp', 'season_type_opp', 'opp_opp_id', 'season_type_roster',
     ]
     player_df = player_df.drop(columns=[col for col in redundant_cols if col in player_df.columns], errors='ignore')
 

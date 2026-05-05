@@ -79,7 +79,7 @@ def _aggregate_logs(df, group_keys):
     count_agg = {s: lambda x: x.notna().sum() for s in present_stats}
 
     sums = df.groupby(group_keys, as_index=False)[present_stats + ["GAME_ID"]].agg(
-        {**{s: "sum" for s in present_stats}, "GAME_ID": "count"}
+        {**{s: "sum" for s in present_stats}, "GAME_ID": "nunique"}
     )
     sums = sums.rename(columns={s: f"{s}_log_sum" for s in present_stats})
     sums = sums.rename(columns={"GAME_ID": "GP_log"})
