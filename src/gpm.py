@@ -200,10 +200,9 @@ def _log_to_mlflow(job: dict, summary: dict) -> str | None:
         if glm_family:
             mlflow.set_tag("glm_family", str(glm_family))
 
-        # Top-5 ranked players: name as param (Params tab), rating as metric (Evaluation tab)
+        # Top-5 ranked players: name as param — strings cannot be metrics in MLflow
         for i, row in enumerate(summary.get("top10_combined", [])[:5], 1):
-            mlflow.log_param(f"rank_{i}", row["player_name"])
-            mlflow.log_metric(f"rank_{i}_gpm", float(row["combined_rating"]))
+            mlflow.log_param(f"rank_{i}_gpm", row["player_name"])
 
         # Spotlight players
         spotlight = summary.get("spotlight", {})
