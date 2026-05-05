@@ -25,7 +25,8 @@ def _parse_min(val):
         return 0.0
 
 
-def _build_pivot(df, is_home: int, prefix: str, min_threshold: float, feature_type: str, target_col: str = None):
+def _build_pivot(df, is_home: int, prefix: str, min_threshold: float, feature_type: str,
+                 target_col: str = None, player_universe: list = None):
     min_col = "MIN_filled" if "MIN_filled" in df.columns else "MIN"
     side = df[df["is_home"] == is_home].copy()
     side["MIN_float"] = side[min_col].apply(_parse_min)
@@ -41,16 +42,19 @@ def _build_pivot(df, is_home: int, prefix: str, min_threshold: float, feature_ty
     ].drop_duplicates(subset=["GAME_ID", "PLAYER_ID"])
 
     all_games   = sorted(qualified["GAME_ID"].unique())
-    all_players = sorted(qualified["PLAYER_ID"].unique())
+    # Use caller-supplied universe (same set for both pivots) or derive from qualified rows
+    all_players = list(player_universe) if player_universe is not None else sorted(qualified["PLAYER_ID"].unique())
     game_idx    = {g: i for i, g in enumerate(all_games)}
     player_idx  = {p: i for i, p in enumerate(all_players)}
 
-    row_idx = qualified["GAME_ID"].map(game_idx).values
-    col_idx = qualified["PLAYER_ID"].map(player_idx).values
+    # Filter qualified to players in the column universe before building indices
+    q = qualified[qualified["PLAYER_ID"].isin(player_idx)]
+    row_idx = q["GAME_ID"].map(game_idx).values
+    col_idx = q["PLAYER_ID"].map(player_idx).values
 
     if feature_type == "pct":
         data = np.zeros((len(all_games), len(all_players)), dtype=np.float32)
-        data[row_idx, col_idx] = qualified["MIN_pct"].values
+        data[row_idx, col_idx] = q["MIN_pct"].values
     else:
         data = np.zeros((len(all_games), len(all_players)), dtype=np.int8)
         data[row_idx, col_idx] = 1
@@ -124,8 +128,6 @@ def run_features_stage(job):
 
     needed = {"GAME_ID", "PLAYER_ID", "TEAM_ID", "GAME_DATE", "is_home", "MATCHUP",
               "season", "season_type", "MIN", "MIN_filled", target_stat}
-    if not off_def_split:
-        needed.add("opp_PTS")
     df = pd.read_csv(src, usecols=lambda c: c in needed)
 
     if "is_home" not in df.columns:
@@ -156,14 +158,6 @@ def run_features_stage(job):
         before = df["GAME_ID"].nunique()
         df = df[df["season"] >= "1951-52"]
         print(f"  pre1952 filter: {df['GAME_ID'].nunique()}/{before} games kept (>= 1951-52)")
-
-    if not off_def_split:
-        if "opp_PTS" not in df.columns:
-            raise ValueError("opp_PTS column required for off_def_split=False — re-run the clean stage")
-        home_pts = df[df["is_home"] == 1].groupby("GAME_ID")[target_stat].first().rename("home_pts")
-        road_pts = df[df["is_home"] == 0].groupby("GAME_ID")[target_stat].first().rename("road_pts")
-        pt_diff  = (home_pts - road_pts).rename("PtDiff")
-        df = df.join(pt_diff, on="GAME_ID")
 
     if job.get("pace_adjustment", False):
         raise NotImplementedError(
@@ -272,19 +266,43 @@ def run_features_stage(job):
         print(f"O cols: {sum(c.startswith('O_') for c in matrix.columns)}  D cols: {sum(c.startswith('D_') for c in matrix.columns)}")
 
     else:
+        ptdiff_exponent = float(job.get("ptdiff_exponent", 1.0))
+
+        # --- game-level target for ALL games (before pivots, so no NaN from missing side) ---
+        home_pts_all = df[df["is_home"] == 1].groupby("GAME_ID")[target_stat].first()
+        road_pts_all = df[df["is_home"] == 0].groupby("GAME_ID")[target_stat].first()
+        game_target  = (home_pts_all / road_pts_all.replace(0, np.nan)) ** ptdiff_exponent
+
+        # --- full player universe across home + road ---
+        def _qualifying_ids(is_home):
+            min_col = "MIN_filled" if "MIN_filled" in df.columns else "MIN"
+            side = df[df["is_home"] == is_home].copy()
+            side["MIN_float"] = side[min_col].apply(_parse_min)
+            if feature_type == "pct":
+                return set(side[side["MIN_float"] / 48.0 >= min_threshold]["PLAYER_ID"].unique())
+            return set(side[side["MIN_float"] >= min_threshold]["PLAYER_ID"].unique())
+
+        all_players = sorted(_qualifying_ids(1) | _qualifying_ids(0))
+        print(f"  Combined player universe: {len(all_players)} players")
+
         # --- pivots (combined, one row per game) ---
-        # P_ columns: +value for home-qualifying players, -value for road-qualifying players
-        # Target: PtDiff = home_tm_PTS - road_tm_PTS (from home team perspective)
-        home_lineup = _build_pivot(df, is_home=1, prefix="P", target_col="PtDiff", min_threshold=min_threshold, feature_type=feature_type)
-        road_lineup = _build_pivot(df, is_home=0, prefix="P", target_col=None,    min_threshold=min_threshold, feature_type=feature_type)
+        # Both pivots share the same player column set; no post-hoc union needed.
+        # P_ value: +1 when player qualified as home team, -1 as road team, 0 otherwise.
+        home_lineup = _build_pivot(df, is_home=1, prefix="P", target_col=None,
+                                   min_threshold=min_threshold, feature_type=feature_type,
+                                   player_universe=all_players)
+        road_lineup = _build_pivot(df, is_home=0, prefix="P", target_col=None,
+                                   min_threshold=min_threshold, feature_type=feature_type,
+                                   player_universe=all_players)
 
         if debug:
             _save_debug({
                 "step": "pivots",
                 "mode": "combined",
-                "home_lineup": {"shape": list(home_lineup.shape), "games": len(home_lineup), "players": sum(c.startswith("P_") for c in home_lineup.columns)},
-                "road_lineup": {"shape": list(road_lineup.shape), "games": len(road_lineup), "players": sum(c.startswith("P_") for c in road_lineup.columns)},
-                "note": "home players get +value, road players get -value; one row per game",
+                "home_lineup": {"shape": list(home_lineup.shape), "games": len(home_lineup), "players": len(all_players)},
+                "road_lineup": {"shape": list(road_lineup.shape), "games": len(road_lineup), "players": len(all_players)},
+                "ptdiff_exponent": ptdiff_exponent,
+                "note": "home players +1, road players -1; shared player universe",
             }, debug_dir, "features_02_pivots.json")
 
         if stop_after == "pivots":
@@ -292,17 +310,12 @@ def run_features_stage(job):
             return
 
         # --- join (combined) ---
-        pt_diff_col  = home_lineup[["PtDiff"]].copy()
-        home_feats   = home_lineup.drop(columns=["PtDiff"])
-        all_player_cols = home_feats.columns.union(road_lineup.columns)
-        all_games       = home_feats.index.union(road_lineup.index)
-
-        home_feats  = home_feats.reindex(index=all_games, columns=all_player_cols, fill_value=0)
-        road_feats  = road_lineup.reindex(index=all_games, columns=all_player_cols, fill_value=0)
+        all_games  = home_lineup.index.union(road_lineup.index)
+        home_feats = home_lineup.reindex(index=all_games, fill_value=0)
+        road_feats = road_lineup.reindex(index=all_games, fill_value=0)
 
         signed = home_feats.subtract(road_feats)
-        signed = pd.concat([signed, pt_diff_col.reindex(all_games)], axis=1)
-        signed.rename(columns={"PtDiff": "team_pts"}, inplace=True)
+        signed["team_pts"] = game_target.reindex(all_games)
 
         if debug:
             _save_debug({
@@ -331,8 +344,7 @@ def run_features_stage(job):
                 "null_team_pts": int(matrix["team_pts"].isna().sum()),
             }, debug_dir, "features_04_matrix.json")
 
-        home_feats_only = home_lineup.drop(columns=["PtDiff"], errors="ignore")
-        _build_qualified_games(home_feats_only, road_lineup, "P").to_csv(
+        _build_qualified_games(home_lineup, road_lineup, "P").to_csv(
             os.path.join(out_dir, "player_qualified_games.csv"), index=False
         )
         print(f"Design matrix shape: {matrix.shape}")

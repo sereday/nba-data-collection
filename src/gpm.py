@@ -135,7 +135,7 @@ def _build_run_summary(job: dict, merged: pd.DataFrame, metrics: dict) -> dict:
     glm_kwargs = job.get("glm_kwargs", {})
 
     default_track = ["min_threshold", "feature_type", "min_games", "min_total_games",
-                     "off_def_split", "pace_adjustment",
+                     "off_def_split", "ptdiff_exponent", "pace_adjustment",
                      "season_start", "season_end", "rapm_signal_threshold"]
     extra_track = job.get("mlflow_track_params", [])
     params = {k: job.get(k) for k in dict.fromkeys(default_track + extra_track)}

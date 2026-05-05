@@ -12,6 +12,16 @@ gpm_results.csv
 mlflow.db
 mlruns/
 
+# Google service account credentials
+*.json.key
+gdrive-access*.json
+
+# Syncthing
+.stfolder/
+
+# Results (generated)
+results/
+
 # Claude Code
 .claude/
 

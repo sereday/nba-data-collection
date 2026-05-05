@@ -91,7 +91,8 @@ def build_summary(agg_path: str, season_path: str) -> pd.DataFrame:
         if log_count_col not in merged.columns:
             continue
 
-        sub = merged[JOIN_KEYS + ["GP_log", "GP_season"]].copy()
+        name_cols = ["player_name"] if "player_name" in merged.columns else []
+        sub = merged[JOIN_KEYS + name_cols + ["GP_log", "GP_season"]].copy()
         sub["stat"] = stat
 
         log_count  = merged[log_count_col].fillna(0)
@@ -109,12 +110,12 @@ def build_summary(agg_path: str, season_path: str) -> pd.DataFrame:
         null_games    = (pd.to_numeric(gp_season, errors="coerce") - pd.to_numeric(log_count, errors="coerce")).clip(lower=0)
         missing_total = (season_total - log_sum)
 
-        sub["pct_not_null"]      = _div(log_count * 100, gp_season).round(1)
+        sub["pct_not_null"]      = _div(log_count * 100, gp_season).clip(0, 100).round(1)
         sub["avg_nonNull"]       = _div(log_sum, log_count)
         sub["total_games"]       = gp_season
         sub["season_avg"]        = _div(season_total, gp_season)
         sub["null_games"]        = null_games
-        sub["inferred_avg_null"] = _div(missing_total, null_games)
+        sub["inferred_avg_null"] = _div(missing_total, null_games).clip(lower=0)
 
         rows.append(sub)
 
