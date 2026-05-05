@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from collection import main
-from config import load_job_request
+from config import load_job_request, get_skipped_stages
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,6 +45,34 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _check_run_name(job: dict) -> None:
+    """Warn and prompt if GPM will run with an already-used run_name."""
+    if "gpm" in get_skipped_stages(job):
+        return
+    run_name = job.get("run_name", "").strip()
+    if not run_name:
+        return
+    history_path = ROOT / "results" / "top10_history.csv"
+    if not history_path.exists():
+        return
+    try:
+        import pandas as pd
+        history = pd.read_csv(history_path, usecols=["run_name"])
+        if run_name not in history["run_name"].values:
+            return
+    except Exception:
+        return
+
+    print(
+        f"\n  WARNING: run_name '{run_name}' already has a successful GPM result in top10_history.csv.\n"
+        f"  Change run_name in job_request.json to avoid a duplicate entry.\n"
+    )
+    answer = input("  Continue anyway? [y/N] ").strip().lower()
+    if answer != "y":
+        print("Aborted.")
+        sys.exit(0)
+
+
 if __name__ == "__main__":
     args = parse_args()
     job = load_job_request(args.config)
@@ -55,5 +83,7 @@ if __name__ == "__main__":
         job["skip_stages"] = args.skip_stages
     if args.overwrite:
         job["overwrite"] = True
+
+    _check_run_name(job)
 
     main(job)

@@ -78,11 +78,11 @@ def _lookup_spotlight(merged: pd.DataFrame) -> dict:
         return {}
     name_col = merged["player_name"].fillna("").str.lower()
     out = {}
-    for initials, full_name in SPOTLIGHT_PLAYERS.items():
+    for _initials, full_name in SPOTLIGHT_PLAYERS.items():
         mask = name_col == full_name.lower()
         row = merged[mask]
-        if not row.empty:
-            out[initials] = round(float(row["combined_rating"].iloc[0]), 4)
+        key = full_name.replace(" ", "_")
+        out[key] = round(float(row["combined_rating"].iloc[0]), 4) if not row.empty else None
     return out
 
 
@@ -104,6 +104,8 @@ def _append_top10_history(summary: dict, run_id: str) -> None:
 
     new_df = pd.DataFrame([row])
     if history_path.exists():
+        existing = pd.read_csv(history_path, nrows=0)
+        new_df = new_df.reindex(columns=existing.columns)
         new_df.to_csv(history_path, mode="a", header=False, index=False)
     else:
         new_df.to_csv(history_path, index=False)
@@ -240,6 +242,7 @@ def _log_to_mlflow(job: dict, summary: dict) -> str | None:
     print(f"  MLflow run: {run_id}")
     print(f"  View: mlflow ui --backend-store-uri {tracking_uri_display}  → http://localhost:5000")
     return run_id
+
 
 
 def run_gpm_stage(job) -> dict | None:
