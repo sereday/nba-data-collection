@@ -71,10 +71,13 @@ def build_summary(agg_path: str, season_path: str) -> pd.DataFrame:
 
     # Keep only the columns we need from season stats
     season_stat_cols = [s for s in STATS if s in season.columns]
-    season_keep = JOIN_KEYS + ["GP"] + season_stat_cols
+    name_col = ["PLAYER"] if "PLAYER" in season.columns else []
+    season_keep = JOIN_KEYS + name_col + ["GP"] + season_stat_cols
     season = season[[c for c in season_keep if c in season.columns]].copy()
     season = season.rename(columns={s: f"{s}_season_total" for s in season_stat_cols})
     season = season.rename(columns={"GP": "GP_season"})
+    if name_col:
+        season = season.rename(columns={"PLAYER": "player_name"})
 
     merged = agg.merge(season, on=JOIN_KEYS, how="inner")
     print(f"  Merged: {len(merged):,} rows (agg={len(agg):,}, season={len(season):,})")
@@ -101,20 +104,23 @@ def build_summary(agg_path: str, season_path: str) -> pd.DataFrame:
             den = pd.to_numeric(den, errors="coerce")
             return (num / den.replace(0, np.nan)).round(4)
 
-        sub["pct_not_null"]      = _div(log_count * 100, gp_log).round(1)
+        # Use GP_season as the consistent denominator for all coverage metrics
+        season_total  = pd.to_numeric(merged[season_col], errors="coerce") if season_col in merged.columns else pd.Series(np.nan, index=merged.index)
+        null_games    = (pd.to_numeric(gp_season, errors="coerce") - pd.to_numeric(log_count, errors="coerce")).clip(lower=0)
+        missing_total = (season_total - log_sum)
+
+        sub["pct_not_null"]      = _div(log_count * 100, gp_season).round(1)
         sub["avg_nonNull"]       = _div(log_sum, log_count)
         sub["total_games"]       = gp_season
-        season_total             = pd.to_numeric(merged[season_col], errors="coerce") if season_col in merged.columns else pd.Series(np.nan, index=merged.index)
         sub["season_avg"]        = _div(season_total, gp_season)
-        null_games               = (pd.to_numeric(gp_season, errors="coerce") - pd.to_numeric(log_count, errors="coerce")).clip(lower=0)
         sub["null_games"]        = null_games
-        sub["inferred_avg_null"] = _div(season_total - log_sum, null_games)
+        sub["inferred_avg_null"] = _div(missing_total, null_games)
 
         rows.append(sub)
 
     result = pd.concat(rows, ignore_index=True)
-    col_order = JOIN_KEYS + ["stat", "pct_not_null", "avg_nonNull", "total_games",
-                             "season_avg", "null_games", "inferred_avg_null"]
+    col_order = JOIN_KEYS + ["player_name", "stat", "pct_not_null", "avg_nonNull",
+                             "total_games", "season_avg", "null_games", "inferred_avg_null"]
     return result[[c for c in col_order if c in result.columns]].sort_values(
         JOIN_KEYS + ["stat"]
     ).reset_index(drop=True)
