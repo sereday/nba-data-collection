@@ -179,6 +179,9 @@ def _run_player_impute(season_plan, data_dir, cleaned_df, output_format):
     if season_stats_df.empty:
         warnings.warn("No player season stats loaded; skipping player impute.")
         return
+    ext = "parquet" if output_format == "parquet" else "csv"
+    _save(season_stats_df, os.path.join(data_dir, f"player_season_stats_combined.{ext}"), output_format)
+    print(f"  Saved combined player season stats ({len(season_stats_df):,} rows) → data/player_season_stats_combined.{ext}")
     _save_debug_sample(season_stats_df, os.path.join(debug_dir, "player_02_season_stats_sample.csv"))
 
     has_team_id = season_stats_df["TEAM_ID"].notna() if "TEAM_ID" in season_stats_df.columns else pd.Series(False, index=season_stats_df.index)
