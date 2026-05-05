@@ -92,6 +92,7 @@ def _build_run_summary(job: dict, merged: pd.DataFrame, metrics: dict) -> dict:
     glm_kwargs = job.get("glm_kwargs", {})
 
     default_track = ["min_threshold", "feature_type", "min_games", "min_total_games",
+                     "off_def_split", "pace_adjustment",
                      "season_start", "season_end", "rapm_signal_threshold"]
     extra_track = job.get("mlflow_track_params", [])
     params = {k: job.get(k) for k in dict.fromkeys(default_track + extra_track)}
@@ -187,9 +188,9 @@ def _log_to_mlflow(job: dict, summary: dict) -> str | None:
         if all_metrics:
             mlflow.log_metrics(all_metrics)
 
-        # Top-5 ranked players
+        # Top-5 ranked players — set as tags so they appear in the runs list view
         for i, p in enumerate(summary.get("top10_combined", [])[:5], 1):
-            mlflow.log_param(f"rank_{i}_gpm", p["player_name"])
+            mlflow.set_tag(f"rank_{i}_gpm", p["player_name"])
 
         # Spotlight players
         spotlight = summary.get("spotlight", {})
