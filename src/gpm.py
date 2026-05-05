@@ -246,7 +246,7 @@ def _log_to_mlflow(job: dict, summary: dict) -> str | None:
         # Spotlight players
         spotlight = summary.get("spotlight", {})
         if spotlight:
-            mlflow.log_metrics({k: float(v) for k, v in spotlight.items()})
+            mlflow.log_metrics({k: float(v) for k, v in spotlight.items() if v is not None})
 
         for rel in ["results/gpm_results.csv", "results/run_summary.json", "results/run_summary.csv"]:
             path = _ROOT / rel
@@ -409,6 +409,11 @@ def run_gpm_stage(job) -> dict | None:
             summary["mlflow_tracking_uri"] = job.get("mlflow_tracking_uri", "http://localhost:5000")
             summary["run_name"] = job.get("run_name", "")
             _append_top10_history(summary, run_id)
+
+        history_path = _ROOT / "results" / "top10_history.csv"
+        if history_path.exists():
+            from src.sheets import push_results
+            push_results(results, pd.read_csv(history_path))
 
     finally:
         try:
