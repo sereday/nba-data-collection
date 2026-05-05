@@ -178,19 +178,32 @@ def _log_to_mlflow(job: dict, summary: dict) -> str | None:
         # RAPM validation metrics + numeric params for evaluation comparison
         rapm_metrics = {k: float(v) for k, v in summary.get("metrics", {}).items()
                         if isinstance(v, (int, float))}
-        numeric_param_keys = [
-            "glm_lambda_", "glm_alpha", "glm_max_active_predictors",
-            "min_games", "min_threshold", "off_def_split", "pace_adjustment",
-        ]
-        param_metrics = {k: float(v) for k, v in summary.get("params", {}).items()
-                         if k in numeric_param_keys and v is not None}
+        # Always-present numeric params
+        always_numeric = ["glm_max_active_predictors", "min_games", "min_threshold",
+                          "off_def_split", "pace_adjustment"]
+        # Nullable GLM params — log -1 when null so the column always appears in evaluation view
+        nullable_glm = ["glm_lambda_", "glm_alpha", "glm_offset_column",
+                        "glm_beta_constraints", "glm_weights_column"]
+        params_dict = summary.get("params", {})
+        param_metrics = {}
+        for k in always_numeric:
+            if params_dict.get(k) is not None:
+                param_metrics[k] = float(params_dict[k])
+        for k in nullable_glm:
+            param_metrics[k] = float(params_dict[k]) if params_dict.get(k) is not None else -1.0
         all_metrics = {**rapm_metrics, **param_metrics}
         if all_metrics:
             mlflow.log_metrics(all_metrics)
 
-        # Top-5 ranked players — set as tags so they appear in the runs list view
-        for i, p in enumerate(summary.get("top10_combined", [])[:5], 1):
-            mlflow.set_tag(f"rank_{i}_gpm", p["player_name"])
+        # glm_family is a string — log as tag so it appears in the runs list
+        glm_family = params_dict.get("glm_family")
+        if glm_family:
+            mlflow.set_tag("glm_family", str(glm_family))
+
+        # Top-5 ranked players: name as param (Params tab), rating as metric (Evaluation tab)
+        for i, row in enumerate(summary.get("top10_combined", [])[:5], 1):
+            mlflow.log_param(f"rank_{i}", row["player_name"])
+            mlflow.log_metric(f"rank_{i}_gpm", float(row["combined_rating"]))
 
         # Spotlight players
         spotlight = summary.get("spotlight", {})
