@@ -86,6 +86,39 @@ def _lookup_spotlight(merged: pd.DataFrame) -> dict:
     return out
 
 
+def _append_top10_history(summary: dict, run_id: str) -> None:
+    results_dir = _ROOT / "results"
+    results_dir.mkdir(exist_ok=True)
+    history_path = results_dir / "top10_history.csv"
+
+    run_meta = {
+        "run_id":        run_id,
+        "run_name":      summary.get("run_name", ""),
+        "run_timestamp": summary.get("run_timestamp", ""),
+    }
+    run_meta.update({f"param.{k}": v for k, v in summary.get("params", {}).items()})
+    run_meta.update({f"metric.{k}": v for k, v in summary.get("metrics", {}).items()})
+    run_meta.update({f"spotlight.{k}": v for k, v in summary.get("spotlight", {}).items()})
+
+    rows = []
+    for row in summary.get("top10_combined", []):
+        rows.append({
+            **run_meta,
+            "player_name":      row.get("player_name"),
+            "player_id":        row.get("player_id"),
+            "combined_rating":  row.get("combined_rating"),
+            "offensive_rating": row.get("offensive_rating"),
+            "defensive_rating": row.get("defensive_rating"),
+        })
+
+    new_df = pd.DataFrame(rows)
+    if history_path.exists():
+        new_df.to_csv(history_path, mode="a", header=False, index=False)
+    else:
+        new_df.to_csv(history_path, index=False)
+    print(f"  Top-10 history appended → {history_path}")
+
+
 def _build_run_summary(job: dict, merged: pd.DataFrame, metrics: dict) -> dict:
     GLM_TRACK = ["family", "lambda_", "alpha", "max_active_predictors",
                  "offset_column", "weights_column", "beta_constraints"]
@@ -363,6 +396,8 @@ def run_gpm_stage(job) -> dict | None:
         if run_id:
             summary["mlflow_run_id"] = run_id
             summary["mlflow_tracking_uri"] = job.get("mlflow_tracking_uri", "http://localhost:5000")
+            summary["run_name"] = job.get("run_name", "")
+            _append_top10_history(summary, run_id)
 
     finally:
         try:
