@@ -147,6 +147,16 @@ def run_features_stage(job):
             "is_home_counts": df["is_home"].value_counts().to_dict() if "is_home" in df.columns else "missing",
         }, debug_dir, "features_01_load.json")
 
+    if not job.get("preseason", True) and "season_type" in df.columns:
+        before = df["GAME_ID"].nunique()
+        df = df[df["season_type"] != "Preseason"]
+        print(f"  preseason filter: {df['GAME_ID'].nunique()}/{before} games kept")
+
+    if not job.get("pre1952", True) and "season" in df.columns:
+        before = df["GAME_ID"].nunique()
+        df = df[df["season"] >= "1951-52"]
+        print(f"  pre1952 filter: {df['GAME_ID'].nunique()}/{before} games kept (>= 1951-52)")
+
     if not off_def_split:
         if "opp_PTS" not in df.columns:
             raise ValueError("opp_PTS column required for off_def_split=False — re-run the clean stage")
