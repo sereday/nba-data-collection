@@ -5,8 +5,10 @@ Setup (one-time):
   2. Enable "Google Sheets API" and "Google Drive API".
   3. Create a Service Account, download the JSON key.
   4. Set env var:  GOOGLE_SHEETS_CREDS=/path/to/service_account.json
-  5. The spreadsheet is created automatically and made publicly readable.
-     Share the URL with whoever needs it — it stays fixed across runs.
+  5. Create a Google Sheet in your own Drive.
+  6. Share it (Editor) with the service account email (client_email in the JSON key).
+  7. Set "google_sheets_id" in job_request.json to the spreadsheet ID
+     (the long string in the sheet's URL between /d/ and /edit).
 """
 import os
 from pathlib import Path
@@ -35,8 +37,10 @@ def _client():
     return gspread.authorize(creds)
 
 
-def _open_or_create(gc, title: str):
+def _open_or_create(gc, title: str, spreadsheet_id: str = None):
     import gspread
+    if spreadsheet_id:
+        return gc.open_by_key(spreadsheet_id)
     try:
         return gc.open(title)
     except gspread.SpreadsheetNotFound:
@@ -58,7 +62,8 @@ def _upload_tab(sh, tab_name: str, df: pd.DataFrame) -> None:
     ws.update(rows)
 
 
-def push_results(gpm_results: pd.DataFrame, run_comparisons: pd.DataFrame) -> str | None:
+def push_results(gpm_results: pd.DataFrame, run_comparisons: pd.DataFrame,
+                 spreadsheet_id: str = None) -> str | None:
     """Upload both tables to Google Sheets. Returns the spreadsheet URL, or None on failure."""
     try:
         gc = _client()
@@ -67,7 +72,7 @@ def push_results(gpm_results: pd.DataFrame, run_comparisons: pd.DataFrame) -> st
         return None
 
     try:
-        sh = _open_or_create(gc, _SPREADSHEET_NAME)
+        sh = _open_or_create(gc, _SPREADSHEET_NAME, spreadsheet_id=spreadsheet_id)
         _upload_tab(sh, "gpm_results",     gpm_results)
         _upload_tab(sh, "run_comparisons", run_comparisons)
         print(f"  [sheets] Updated → {sh.url}")

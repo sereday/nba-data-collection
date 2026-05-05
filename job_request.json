@@ -100,6 +100,8 @@
   "── SECTION: REFRESHES ───────────────────────────────────────": "",
   "data_quality_script": "python research/data_quality.py",
   "data_quality_viz_script": "streamlit run research/data_quality_viz.py",
+  "google_sheets_id": "",
+  "google_sheets_id__note": "spreadsheet ID from the sheet URL (/d/<ID>/edit); the sheet must be shared (Editor) with the service account email in GOOGLE_SHEETS_CREDS. Leave blank to auto-create (requires service account to have Drive storage).",
   "validation_script": "python research/rapm_import.py",
   "rapm_signal_threshold_note": "min name_signal to include a player in RAPM validation (run automatically in gpm stage); see data/rapm_30y.csv — signal = cos_best / (cos_best + cos_2nd)",
   "rapm_signal_threshold": 0.53,

@@ -413,7 +413,8 @@ def run_gpm_stage(job) -> dict | None:
         history_path = _ROOT / "results" / "top10_history.csv"
         if history_path.exists():
             from src.sheets import push_results
-            push_results(results, pd.read_csv(history_path))
+            push_results(results, pd.read_csv(history_path),
+                         spreadsheet_id=job.get("google_sheets_id"))
 
     finally:
         try:
