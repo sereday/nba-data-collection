@@ -91,27 +91,18 @@ def _append_top10_history(summary: dict, run_id: str) -> None:
     results_dir.mkdir(exist_ok=True)
     history_path = results_dir / "top10_history.csv"
 
-    run_meta = {
+    row = {
         "run_id":        run_id,
         "run_name":      summary.get("run_name", ""),
         "run_timestamp": summary.get("run_timestamp", ""),
     }
-    run_meta.update({f"param.{k}": v for k, v in summary.get("params", {}).items()})
-    run_meta.update({f"metric.{k}": v for k, v in summary.get("metrics", {}).items()})
-    run_meta.update({f"spotlight.{k}": v for k, v in summary.get("spotlight", {}).items()})
+    row.update({f"param.{k}": v for k, v in summary.get("params", {}).items()})
+    row.update({f"metric.{k}": v for k, v in summary.get("metrics", {}).items()})
+    row.update({f"spotlight.{k}": v for k, v in summary.get("spotlight", {}).items()})
+    for i, player in enumerate(summary.get("top10_combined", []), 1):
+        row[f"gpm_{i}"] = player.get("player_name")
 
-    rows = []
-    for row in summary.get("top10_combined", []):
-        rows.append({
-            **run_meta,
-            "player_name":      row.get("player_name"),
-            "player_id":        row.get("player_id"),
-            "combined_rating":  row.get("combined_rating"),
-            "offensive_rating": row.get("offensive_rating"),
-            "defensive_rating": row.get("defensive_rating"),
-        })
-
-    new_df = pd.DataFrame(rows)
+    new_df = pd.DataFrame([row])
     if history_path.exists():
         new_df.to_csv(history_path, mode="a", header=False, index=False)
     else:
