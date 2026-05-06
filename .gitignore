@@ -18,8 +18,9 @@ gdrive-access*.json
 # Syncthing
 .stfolder/
 
-# Results (generated)
-results/
+# Results (generated) — gpm_results.csv and top10_history.csv are tracked; all else ignored
+results/run_summary.json
+results/run_summary.csv
 
 # Claude Code
 .claude/

@@ -123,11 +123,12 @@ def main():
                                "null_games", "avg_nonNull", "season_avg",
                                "inferred_avg_null"] if c in plot_df.columns]
 
-    fig = px.scatter(
-        plot_df,
+    fig = px.bar(
+        plot_df.sort_values("pct_not_null_r"),
         x="pct_not_null_r",
         y="ratio",
         color=color_col,
+        barmode="group",
         hover_data=hover_cols,
         labels={
             "pct_not_null_r": f"% games not null (rounded to {x_round}%)",
@@ -139,7 +140,6 @@ def main():
             f"  |  {', '.join(season_types)}"
             f"  |  {grouping_label}"
         ),
-        opacity=0.5,
     )
     fig.add_hline(y=1.0, line_dash="dash", line_color="grey", annotation_text="ratio = 1")
     fig.update_layout(height=600, xaxis_range=[0, 105],
@@ -147,8 +147,33 @@ def main():
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── Summary table ─────────────────────────────────────────────────────────
-    with st.expander("Show data table"):
+    # ── Means table ───────────────────────────────────────────────────────────
+    mean_cols = [c for c in ["stat", "season", "player_name",
+                              "pct_not_null_r", "ratio", "avg_nonNull", "season_avg",
+                              "null_games", "inferred_avg_null"] if c in plot_df.columns]
+    group_by = [c for c in ["stat", "season"] if c in plot_df.columns]
+    if group_by:
+        means_df = (
+            plot_df[mean_cols]
+            .groupby(group_by, as_index=False)
+            .mean(numeric_only=True)
+            .sort_values(group_by)
+        )
+    else:
+        means_df = plot_df[mean_cols].mean(numeric_only=True).to_frame("mean").T
+
+    st.subheader("Means")
+    st.dataframe(means_df.style.format({
+        "pct_not_null_r": "{:.1f}%",
+        "ratio":          "{:.4f}",
+        "avg_nonNull":    "{:.2f}",
+        "season_avg":     "{:.2f}",
+        "null_games":     "{:.1f}",
+        "inferred_avg_null": "{:.2f}",
+    }, na_rep="—"), use_container_width=True)
+
+    # ── Raw data table ────────────────────────────────────────────────────────
+    with st.expander("Show raw data"):
         st.dataframe(plot_df.sort_values("pct_not_null_r"), use_container_width=True)
 
 
