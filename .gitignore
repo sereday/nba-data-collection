@@ -6,7 +6,6 @@ debug/
 debug_inspections/
 validations/
 ping_log.csv
-gpm_results.csv
 
 # MLflow
 mlflow.db
