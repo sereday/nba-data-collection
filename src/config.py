@@ -60,7 +60,13 @@ def save_dataframe(df, path_stem) -> None:
     import pandas as pd
     stem = Path(path_stem)
     stem.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(stem.with_suffix(".parquet"), index=False)
+    # Parquet via pyarrow cannot handle object columns that mix strings and floats (e.g. NaN-promoted
+    # string columns).  Cast object columns to pandas StringDtype so pyarrow sees a proper null-aware
+    # string array.  Use a copy so the CSV retains the original dtypes.
+    pq_df = df.copy()
+    for col in pq_df.select_dtypes("object").columns:
+        pq_df[col] = pq_df[col].astype("string")
+    pq_df.to_parquet(stem.with_suffix(".parquet"), index=False)
     df.to_csv(stem.with_suffix(".csv"), index=False)
     print(f"  Saved → {stem}.parquet + .csv")
 
