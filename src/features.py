@@ -124,8 +124,9 @@ def run_features_stage(job):
     # --- load ---
     needed = {"GAME_ID", "PLAYER_ID", "TEAM_ID", "GAME_DATE", "is_home", "MATCHUP",
               "season", "season_type", "MIN", "MIN_filled", target_stat}
-    df = load_dataframe(os.path.join(out_dir, "imputed_player_data"), columns=list(needed)) \
-      or load_dataframe(os.path.join(out_dir, "cleaned_player_data"),  columns=list(needed))
+    df = load_dataframe(os.path.join(out_dir, "imputed_player_data"), columns=list(needed))
+    if df is None:
+        df = load_dataframe(os.path.join(out_dir, "cleaned_player_data"), columns=list(needed))
     if df is None:
         raise FileNotFoundError(f"No imputed or cleaned player data found in {out_dir}")
     src = str(out_dir)
