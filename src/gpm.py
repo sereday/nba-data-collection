@@ -388,6 +388,18 @@ def run_gpm_stage(job) -> dict | None:
             print(f"Home coefficient: {metrics['home_coefficient']:.4f}")
         metrics["n_players"] = len(results)
 
+        # CV metrics (only present when nfolds > 0)
+        nfolds = glm_kwargs.get("nfolds", 0)
+        if nfolds and int(nfolds) > 0:
+            try:
+                cv_m = glm.cross_validation_metrics()
+                metrics["cv_rmse"] = round(float(cv_m.rmse()), 4)
+                metrics["cv_r2"]   = round(float(cv_m.r2()),   4)
+                metrics["cv_mae"]  = round(float(cv_m.mae()),  4)
+                print(f"CV RMSE: {metrics['cv_rmse']:.4f}  R²: {metrics['cv_r2']:.4f}  MAE: {metrics['cv_mae']:.4f}")
+            except Exception as e:
+                print(f"  CV metrics unavailable: {e}")
+
         disp_name = name_col + ["player_id"]
         if off_def_split:
             print("\nTop 10 Offensive Ratings:")
