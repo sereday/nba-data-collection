@@ -415,6 +415,12 @@ def run_gpm_stage(job) -> dict | None:
         results.to_csv(results_dir / "gpm_results.csv", index=False)
         print(f"\nResults saved to {results_dir / 'gpm_results.csv'}")
 
+        run_name = job.get("run_name", "").strip()
+        if run_name:
+            named_path = results_dir / f"gpm_results_{run_name}.csv"
+            results.to_csv(named_path, index=False)
+            print(f"  Named copy saved → {named_path}")
+
         summary = _build_run_summary(job, results, metrics)
         run_id = _log_to_mlflow(job, summary)
         if run_id:
