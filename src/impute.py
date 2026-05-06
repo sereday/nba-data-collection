@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from config import build_season_plan, get_output_directory, get_output_format, get_skipped_stages
+from config import build_season_plan, get_output_directory, get_output_format, get_skipped_stages, save_dataframe
 
 IMPUTABLE_STATS = ["MIN", "FGM", "FGA", "FG3M", "FG3A", "FTM", "FTA", "OREB", "DREB", "REB", "AST", "STL", "BLK", "TOV", "PF", "PTS"]
 
@@ -198,10 +198,8 @@ def _run_player_impute(season_plan, data_dir, cleaned_df, output_format):
     result = _apply_imputed(cleaned_df, imp_df, join_keys, present_stats)
     _save_debug_sample(result, os.path.join(debug_dir, "player_06_result_sample.csv"))
 
-    ext = "parquet" if output_format == "parquet" else "csv"
-    out_path = os.path.join(data_dir, f"imputed_player_data.{ext}")
-    _save(result, out_path, output_format)
-    print(f"Saved imputed player data to {out_path}")
+    save_dataframe(result, os.path.join(data_dir, "imputed_player_data"))
+    print(f"Saved imputed player data → {data_dir}/imputed_player_data.parquet + .csv")
 
 
 def _run_team_impute(season_plan, data_dir, output_format):
@@ -242,10 +240,8 @@ def _run_team_impute(season_plan, data_dir, output_format):
     result = _apply_imputed(team_logs, imp_df, join_keys, present_stats)
     _save_debug_sample(result, os.path.join(debug_dir, "team_06_result_sample.csv"))
 
-    ext = "parquet" if output_format == "parquet" else "csv"
-    out_path = os.path.join(data_dir, f"imputed_team_data.{ext}")
-    _save(result, out_path, output_format)
-    print(f"Saved imputed team data to {out_path}")
+    save_dataframe(result, os.path.join(data_dir, "imputed_team_data"))
+    print(f"Saved imputed team data → {data_dir}/imputed_team_data.parquet + .csv")
 
 
 def run_impute_stage(job):

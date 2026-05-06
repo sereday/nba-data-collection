@@ -10,7 +10,7 @@ from typing import Any, Dict
 
 import pandas as pd
 
-from config import get_output_directory, get_output_format
+from config import get_output_directory, get_output_format, save_dataframe
 
 
 def run_clean_stage(job: Dict[str, Any]) -> None:
@@ -165,21 +165,5 @@ def run_clean_stage(job: Dict[str, Any]) -> None:
     ]
     player_df = player_df.drop(columns=[col for col in redundant_cols if col in player_df.columns], errors='ignore')
 
-    # Save the cleaned data
-    cleaned_filename = "cleaned_player_data"
-    save_data(player_df, output_dir, cleaned_filename, output_format)
-
-
-def save_data(df: pd.DataFrame, output_dir: Path, filename: str, output_format: str) -> None:
-    """Persist a DataFrame to disk in CSV or Parquet format."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    filepath = output_dir / f"{filename}.{output_format}"
-
-    if output_format == "csv":
-        df.to_csv(filepath, index=False)
-    elif output_format == "parquet":
-        df.to_parquet(filepath, index=False)
-    else:
-        raise ValueError(f"Unsupported output format: {output_format}")
-
-    print(f"  Saved to {filepath}")
+    # Save the cleaned data as both parquet (pipeline/git) and csv (validation)
+    save_dataframe(player_df, output_dir / "cleaned_player_data")

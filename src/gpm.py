@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from config import get_output_directory, get_output_format
+from config import get_output_directory, get_output_format, load_dataframe
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -347,26 +347,24 @@ def run_gpm_stage(job) -> dict | None:
             results = combined[["player_id", "offensive_rating", "defensive_rating", "combined_rating", "combined_se"]]
 
         # Join player names from source data
-        for name_file in ("imputed_player_data.csv", "cleaned_player_data.csv"):
-            path = output_dir / name_file
-            if path.exists():
-                names_df = pd.read_csv(path, usecols=["PLAYER_ID", "PLAYER_NAME"]).drop_duplicates("PLAYER_ID")
+        for stem in ("imputed_player_data", "cleaned_player_data"):
+            names_df = load_dataframe(output_dir / stem, columns=["PLAYER_ID", "PLAYER_NAME"])
+            if names_df is not None:
+                names_df = names_df.drop_duplicates("PLAYER_ID")
                 names_df["PLAYER_ID"] = names_df["PLAYER_ID"].astype(str)
                 results = results.merge(names_df, left_on="player_id", right_on="PLAYER_ID", how="left").drop(columns=["PLAYER_ID"])
                 results = results.rename(columns={"PLAYER_NAME": "player_name"})
                 break
 
         # Join games played
-        games_path = output_dir / "player_games.csv"
-        if games_path.exists():
-            gp = pd.read_csv(games_path)
+        gp = load_dataframe(output_dir / "player_games")
+        if gp is not None:
             gp["PLAYER_ID"] = gp["PLAYER_ID"].astype(str)
             results = results.merge(gp, left_on="player_id", right_on="PLAYER_ID", how="left").drop(columns=["PLAYER_ID"])
 
         # Join qualified games (games meeting min_threshold)
-        qual_path = output_dir / "player_qualified_games.csv"
-        if qual_path.exists():
-            qg = pd.read_csv(qual_path)
+        qg = load_dataframe(output_dir / "player_qualified_games")
+        if qg is not None:
             qg["PLAYER_ID"] = qg["PLAYER_ID"].astype(str)
             results = results.merge(qg, left_on="player_id", right_on="PLAYER_ID", how="left").drop(columns=["PLAYER_ID"])
 

@@ -54,6 +54,31 @@ def generate_seasons(start_season: str, end_season: str) -> list[str]:
     return [f"{year}-{str(year + 1)[-2:]}" for year in range(start_year, end_year + 1)]
 
 
+def save_dataframe(df, path_stem) -> None:
+    """Write df as both .parquet (pipeline/git) and .csv (validation). path_stem has no extension."""
+    from pathlib import Path
+    import pandas as pd
+    stem = Path(path_stem)
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(stem.with_suffix(".parquet"), index=False)
+    df.to_csv(stem.with_suffix(".csv"), index=False)
+    print(f"  Saved → {stem}.parquet + .csv")
+
+
+def load_dataframe(path_stem, columns=None):
+    """Read from .parquet (preferred) then .csv fallback. path_stem has no extension."""
+    from pathlib import Path
+    import pandas as pd
+    stem = Path(path_stem)
+    parquet = stem.with_suffix(".parquet")
+    csv = stem.with_suffix(".csv")
+    if parquet.exists():
+        return pd.read_parquet(parquet, columns=columns)
+    if csv.exists():
+        return pd.read_csv(csv, usecols=(lambda c: c in set(columns)) if columns else None, low_memory=False)
+    return None
+
+
 def get_target_stat(job: Dict[str, Any]) -> str:
     """Get the target stat column for the design matrix (e.g. tm_PTS, opp_PTS)."""
     return str(job.get("target_stat", "tm_PTS"))

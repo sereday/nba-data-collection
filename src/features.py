@@ -4,7 +4,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from config import get_output_directory, get_output_format, get_target_stat
+from config import get_output_directory, get_output_format, get_target_stat, save_dataframe, load_dataframe
 
 STOP_AFTER_OPTIONS = ["load", "pivots", "join", "matrix"]
 
@@ -122,13 +122,13 @@ def run_features_stage(job):
         raise ValueError(f"debug_stop_after must be one of {STOP_AFTER_OPTIONS}")
 
     # --- load ---
-    imputed = os.path.join(out_dir, "imputed_player_data.csv")
-    cleaned = os.path.join(out_dir, "cleaned_player_data.csv")
-    src = imputed if os.path.exists(imputed) else cleaned
-
     needed = {"GAME_ID", "PLAYER_ID", "TEAM_ID", "GAME_DATE", "is_home", "MATCHUP",
               "season", "season_type", "MIN", "MIN_filled", target_stat}
-    df = pd.read_csv(src, usecols=lambda c: c in needed)
+    df = load_dataframe(os.path.join(out_dir, "imputed_player_data"), columns=list(needed)) \
+      or load_dataframe(os.path.join(out_dir, "cleaned_player_data"),  columns=list(needed))
+    if df is None:
+        raise FileNotFoundError(f"No imputed or cleaned player data found in {out_dir}")
+    src = str(out_dir)
 
     if "is_home" not in df.columns:
         if "MATCHUP" not in df.columns:
@@ -177,7 +177,7 @@ def run_features_stage(job):
         .rename("games_played")
         .reset_index()
     )
-    games_played.to_csv(os.path.join(out_dir, "player_games.csv"), index=False)
+    save_dataframe(games_played, os.path.join(out_dir, "player_games"))
 
     if min_games > 0:
         eligible = games_played.loc[games_played["games_played"] >= min_games, "PLAYER_ID"]
@@ -259,9 +259,8 @@ def run_features_stage(job):
                 "players_only_road": len(set(d_cols) - set(o_cols)),
             }, debug_dir, "features_04_matrix.json")
 
-        _build_qualified_games(home_off, road_off, "O").to_csv(
-            os.path.join(out_dir, "player_qualified_games.csv"), index=False
-        )
+        save_dataframe(_build_qualified_games(home_off, road_off, "O"),
+                       os.path.join(out_dir, "player_qualified_games"))
         print(f"Design matrix shape: {matrix.shape}")
         print(f"O cols: {sum(c.startswith('O_') for c in matrix.columns)}  D cols: {sum(c.startswith('D_') for c in matrix.columns)}")
 
@@ -361,12 +360,9 @@ def run_features_stage(job):
                 "null_team_pts": int(matrix["team_pts"].isna().sum()),
             }, debug_dir, "features_04_matrix.json")
 
-        _build_qualified_games(home_lineup, road_lineup, "P").to_csv(
-            os.path.join(out_dir, "player_qualified_games.csv"), index=False
-        )
+        save_dataframe(_build_qualified_games(home_lineup, road_lineup, "P"),
+                       os.path.join(out_dir, "player_qualified_games"))
         print(f"Design matrix shape: {matrix.shape}")
         print(f"P cols (signed home−road): {sum(c.startswith('P_') for c in matrix.columns)}")
 
-    out_path = os.path.join(out_dir, "design_matrix.parquet")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    matrix.to_parquet(out_path, index=False)
+    save_dataframe(matrix, os.path.join(out_dir, "design_matrix"))
