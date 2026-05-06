@@ -87,17 +87,30 @@ def _lookup_spotlight(merged: pd.DataFrame) -> dict:
 
 
 def _migrate_top10_history(history_path) -> None:
-    """Rename old initials-based spotlight columns to full-name format."""
-    rename = {f"spotlight.{init}": f"spotlight.{name.replace(' ', '_')}"
-              for init, name in SPOTLIGHT_PLAYERS.items()}
-    # Strip any stray leading-space column names
+    """Normalise spotlight columns: strip 'spotlight.' prefix, drop duplicates."""
     df = pd.read_csv(history_path)
     df.columns = [c.strip() for c in df.columns]
-    changed = {old: new for old, new in rename.items() if old in df.columns and new not in df.columns}
-    if changed:
-        df = df.rename(columns=changed)
+
+    # Step 1: rename old initials → full names (spotlight.MJ → spotlight.Michael_Jordan)
+    initials_rename = {f"spotlight.{init}": f"spotlight.{name.replace(' ', '_')}"
+                       for init, name in SPOTLIGHT_PLAYERS.items()}
+    df = df.rename(columns={old: new for old, new in initials_rename.items()
+                             if old in df.columns and new not in df.columns})
+
+    # Step 2: strip 'spotlight.' prefix; if bare name already exists, drop the prefixed duplicate
+    prefixed = [c for c in df.columns if c.startswith("spotlight.")]
+    drop, rename = [], {}
+    for col in prefixed:
+        bare = col[len("spotlight."):]
+        if bare in df.columns:
+            drop.append(col)
+        else:
+            rename[col] = bare
+    if drop or rename:
+        df = df.drop(columns=drop).rename(columns=rename)
         df.to_csv(history_path, index=False)
-        print(f"  Migrated {len(changed)} spotlight column(s) to full-name format")
+        print(f"  Migrated spotlight columns: stripped prefix from {len(rename)}, "
+              f"dropped {len(drop)} duplicate(s)")
 
 
 def _append_top10_history(summary: dict, run_id: str) -> None:
@@ -115,7 +128,7 @@ def _append_top10_history(summary: dict, run_id: str) -> None:
     }
     row.update({f"param.{k}": v for k, v in summary.get("params", {}).items()})
     row.update({f"metric.{k}": v for k, v in summary.get("metrics", {}).items()})
-    row.update({f"spotlight.{k}": v for k, v in summary.get("spotlight", {}).items()})
+    row.update(summary.get("spotlight", {}))
     for i, player in enumerate(summary.get("top10_combined", []), 1):
         row[f"gpm_{i}"] = player.get("player_name")
 
