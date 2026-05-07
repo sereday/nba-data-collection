@@ -155,14 +155,21 @@ def _build_run_summary(job: dict, merged: pd.DataFrame, metrics: dict) -> dict:
     params.update({f"glm_{k}": glm_kwargs.get(k) for k in GLM_TRACK})
 
     has_name = "player_name" in merged.columns
+    has_mpg = "career_mpg" in merged.columns
     top10 = merged.nlargest(10, "combined_rating")[
         ["player_id", "offensive_rating", "defensive_rating", "combined_rating"]
         + (["player_name"] if has_name else [])
+        + (["career_mpg"] if has_mpg else [])
     ].copy()
     if not has_name:
         top10["player_name"] = top10["player_id"]
     else:
         top10["player_name"] = top10["player_name"].fillna(top10["player_id"])
+
+    if "career_mpg" in merged.columns:
+        corr_df = merged[["combined_rating", "career_mpg"]].dropna()
+        if len(corr_df) > 1:
+            metrics["corr_combined_career_mpg"] = round(float(corr_df["combined_rating"].corr(corr_df["career_mpg"])), 4)
 
     spotlight = _lookup_spotlight(merged)
 
@@ -173,6 +180,7 @@ def _build_run_summary(job: dict, merged: pd.DataFrame, metrics: dict) -> dict:
         "spotlight":      spotlight,
         "top10_combined": top10[
             ["player_id", "player_name", "offensive_rating", "defensive_rating", "combined_rating"]
+            + (["career_mpg"] if has_mpg else [])
         ].round(4).to_dict(orient="records"),
     }
 
@@ -315,6 +323,9 @@ def run_gpm_stage(job) -> dict | None:
         predictors = (o_cols + d_cols + home_col) if off_def_split else (p_cols + home_col)
         response = "team_pts"
 
+        if h2o_frame[response].isfactor()[0]:
+            h2o_frame[response] = h2o_frame[response].asnumeric()
+
         print(f"H2OFrame: {h2o_frame.shape[0]} rows, {len(predictors)} predictors")
 
         glm_kwargs = {k: v for k, v in job.get("glm_kwargs", {}).items() if not k.endswith("_note") and v is not None}
@@ -367,6 +378,13 @@ def run_gpm_stage(job) -> dict | None:
         if qg is not None:
             qg["PLAYER_ID"] = qg["PLAYER_ID"].astype(str)
             results = results.merge(qg, left_on="player_id", right_on="PLAYER_ID", how="left").drop(columns=["PLAYER_ID"])
+
+        # Join career stats (career_gp, career_min, career_mpg)
+        career = load_dataframe(output_dir / "career_stats")
+        if career is not None:
+            career["PLAYER_ID"] = career["PLAYER_ID"].astype(str)
+            career = career[["PLAYER_ID", "career_gp", "career_min", "career_mpg"]]
+            results = results.merge(career, left_on="player_id", right_on="PLAYER_ID", how="left").drop(columns=["PLAYER_ID"])
 
         # Enrich with RAPM metrics
         results, metrics = _run_rapm_validate(job, results)

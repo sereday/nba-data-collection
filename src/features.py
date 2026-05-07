@@ -155,10 +155,11 @@ def run_features_stage(job):
         df = df[df["season_type"] != "Preseason"]
         print(f"  preseason filter: {df['GAME_ID'].nunique()}/{before} games kept")
 
-    if not job.get("pre1952", True) and "season" in df.columns:
+    training_season_start = job.get("training_season_start")
+    if training_season_start and "season" in df.columns:
         before = df["GAME_ID"].nunique()
-        df = df[df["season"] >= "1951-52"]
-        print(f"  pre1952 filter: {df['GAME_ID'].nunique()}/{before} games kept (>= 1951-52)")
+        df = df[df["season"] >= training_season_start]
+        print(f"  training_season_start filter: {df['GAME_ID'].nunique()}/{before} games kept (>= {training_season_start})")
 
     if job.get("pace_adjustment", False):
         raise NotImplementedError(
@@ -242,6 +243,11 @@ def run_features_stage(job):
 
         # --- matrix (split) ---
         matrix = pd.concat([home_rows, road_rows]).reset_index()
+        matrix["team_pts"] = pd.to_numeric(matrix["team_pts"], errors="coerce")
+        null_pts = matrix["team_pts"].isna().sum()
+        if null_pts:
+            print(f"  WARNING: dropping {null_pts} rows with null team_pts")
+            matrix = matrix[matrix["team_pts"].notna()]
 
         if debug:
             o_cols = [c for c in matrix.columns if c.startswith("O_")]
@@ -349,6 +355,11 @@ def run_features_stage(job):
 
         # --- matrix (combined) ---
         matrix = signed.reset_index()
+        matrix["team_pts"] = pd.to_numeric(matrix["team_pts"], errors="coerce")
+        null_pts = matrix["team_pts"].isna().sum()
+        if null_pts:
+            print(f"  WARNING: dropping {null_pts} rows with null team_pts")
+            matrix = matrix[matrix["team_pts"].notna()]
 
         if debug:
             p_cols = [c for c in matrix.columns if c.startswith("P_")]
@@ -367,3 +378,49 @@ def run_features_stage(job):
         print(f"P cols (signed home−road): {sum(c.startswith('P_') for c in matrix.columns)}")
 
     save_dataframe(matrix, os.path.join(out_dir, "design_matrix"))
+    _build_career_summary(job, out_dir)
+
+
+def _build_career_summary(job: dict, out_dir: str) -> None:
+    """Aggregate player_season_stats across all seasons into a career summary."""
+    data_dir = get_output_directory(job)
+    season_types = job.get("season_types", ["Regular"])
+    # Only use Regular season for career MPG
+    use_type = "Regular" if "Regular" in season_types else season_types[0]
+
+    files = sorted(data_dir.glob(f"*_{use_type}_player_season_stats.csv"))
+    if not files:
+        print(f"  career_summary: no player_season_stats files found, skipping")
+        return
+
+    dfs = []
+    for f in files:
+        try:
+            df = pd.read_csv(f, usecols=["PLAYER_ID", "PLAYER_NAME", "GP", "MIN"],
+                             low_memory=False)
+            dfs.append(df)
+        except Exception:
+            pass
+
+    if not dfs:
+        return
+
+    all_seasons = pd.concat(dfs, ignore_index=True)
+    all_seasons["GP"] = pd.to_numeric(all_seasons["GP"], errors="coerce").fillna(0)
+    all_seasons["MIN"] = all_seasons["MIN"].apply(_parse_min)
+
+    career = (
+        all_seasons.groupby("PLAYER_ID", as_index=False)
+        .agg(
+            career_gp=("GP", "sum"),
+            career_min=("MIN", "sum"),
+            player_name=("PLAYER_NAME", "last"),
+        )
+    )
+    career["career_mpg"] = (career["career_min"] / career["career_gp"]).round(2)
+    career["career_gp"] = career["career_gp"].astype(int)
+    career["career_min"] = career["career_min"].round(1)
+    career["PLAYER_ID"] = career["PLAYER_ID"].astype(str)
+
+    save_dataframe(career, os.path.join(out_dir, "career_stats"))
+    print(f"  Career summary: {len(career)} players saved → {out_dir}/career_stats")
