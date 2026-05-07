@@ -8,7 +8,7 @@
   "todo 2": "predicting 4th quarter minutes and +/- could add a lot of signal and is more doable than you might think (see Scott for details). if this is done, should consider moving to percentage of playing time, rather than binary indicator, or a combo of both",
   "todo 3": "mpg informed prior using low or no regularization bpm",
   "── SECTION: Common Parameters ─────────────────────────────────": "",
-  "run_name": "300_gmlimit_tot",
+  "run_name": "300_gmlimit_od",
   "stages": ["import", "patch", "import_validate", "clean", "impute", "features", "gpm"],
   "skip_stages": ["import", "patch", "import_validate", "clean", "impute"],
   "min_threshold": 15.0,
