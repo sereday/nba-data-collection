@@ -454,8 +454,8 @@ def run_gpm_stage(job) -> dict | None:
         if run_id:
             summary["mlflow_run_id"] = run_id
             summary["mlflow_tracking_uri"] = job.get("mlflow_tracking_uri", "http://localhost:5000")
-            summary["run_name"] = job.get("run_name", "")
-            _append_top10_history(summary, run_id)
+        summary["run_name"] = job.get("run_name", "")
+        _append_top10_history(summary, run_id or summary.get("run_timestamp", ""))
 
         history_path = _ROOT / "results" / "top10_history.csv"
         if history_path.exists():

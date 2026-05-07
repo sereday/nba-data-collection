@@ -131,6 +131,10 @@ def run_features_stage(job):
         raise FileNotFoundError(f"No imputed or cleaned player data found in {out_dir}")
     src = str(out_dir)
 
+    for numeric_col in [target_stat, "MIN", "MIN_filled"]:
+        if numeric_col in df.columns:
+            df[numeric_col] = pd.to_numeric(df[numeric_col], errors="coerce")
+
     if "is_home" not in df.columns:
         if "MATCHUP" not in df.columns:
             raise ValueError("cleaned data has neither 'is_home' nor 'MATCHUP' — re-run the clean stage")
