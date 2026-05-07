@@ -86,6 +86,15 @@ def _lookup_spotlight(merged: pd.DataFrame) -> dict:
     return out
 
 
+def _extract_glm_actual_params(glm, glm_kwargs: dict, metrics: dict) -> None:
+    actual = getattr(glm, "actual_params", {})
+    for key, metric_name in [("lambda", "glm_lambda_actual"), ("alpha", "glm_alpha_actual")]:
+        val = actual.get(key)
+        if val is not None:
+            v = val[0] if isinstance(val, list) else float(val)
+            metrics[metric_name] = round(float(v), 6)
+
+
 def _migrate_top10_history(history_path) -> None:
     """Normalise spotlight columns: strip 'spotlight.' prefix, drop duplicates."""
     df = pd.read_csv(history_path)
@@ -333,6 +342,8 @@ def run_gpm_stage(job) -> dict | None:
         print("Training GLM...")
         glm.train(x=predictors, y=response, training_frame=h2o_frame)
 
+        _extract_glm_actual_params(glm, glm_kwargs, metrics)
+
         coef_df = glm.coef_with_p_values().as_data_frame()
         coef_df = coef_df.rename(columns={"names": "name"})
 
@@ -408,15 +419,21 @@ def run_gpm_stage(job) -> dict | None:
 
         # CV metrics (only present when nfolds > 0)
         nfolds = glm_kwargs.get("nfolds", 0)
+        print(f"\n[DEBUG] nfolds={nfolds}, glm_kwargs keys: {list(glm_kwargs.keys())}")
         if nfolds and int(nfolds) > 0:
             try:
                 cv_m = glm.cross_validation_metrics()
+                print(f"[DEBUG] cross_validation_metrics() returned: {cv_m}")
                 metrics["cv_rmse"] = round(float(cv_m.rmse()), 4)
                 metrics["cv_r2"]   = round(float(cv_m.r2()),   4)
                 metrics["cv_mae"]  = round(float(cv_m.mae()),  4)
                 print(f"CV RMSE: {metrics['cv_rmse']:.4f}  R²: {metrics['cv_r2']:.4f}  MAE: {metrics['cv_mae']:.4f}")
             except Exception as e:
+                import traceback
                 print(f"  CV metrics unavailable: {e}")
+                print(traceback.format_exc())
+        else:
+            print(f"[DEBUG] skipping CV metrics — nfolds not > 0")
 
         disp_name = name_col + ["player_id"]
         if off_def_split:

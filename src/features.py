@@ -400,7 +400,7 @@ def _build_career_summary(job: dict, out_dir: str) -> None:
     dfs = []
     for f in files:
         try:
-            df = pd.read_csv(f, usecols=["PLAYER_ID", "PLAYER_NAME", "GP", "MIN"],
+            df = pd.read_csv(f, usecols=lambda c: c in {"PLAYER_ID", "GP", "MIN"},
                              low_memory=False)
             dfs.append(df)
         except Exception:
@@ -418,7 +418,6 @@ def _build_career_summary(job: dict, out_dir: str) -> None:
         .agg(
             career_gp=("GP", "sum"),
             career_min=("MIN", "sum"),
-            player_name=("PLAYER_NAME", "last"),
         )
     )
     career["career_mpg"] = (career["career_min"] / career["career_gp"]).round(2)
